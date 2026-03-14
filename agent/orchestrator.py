@@ -18,6 +18,7 @@ from memory.goals import Goal, GoalSystem
 from memory.journal import AdventureJournal, JournalEntry
 from memory.mental_map import MentalMap
 from reward.engine import RewardEngine
+from sandbox.executor import SandboxExecutor
 from skills.composer import SkillComposer
 from skills.database import SkillDatabase
 from skills.schema import Skill
@@ -67,6 +68,7 @@ class Orchestrator:
         self._goals = GoalSystem(goal_cfg["session_goals_path"], goal_cfg["long_term_goals_path"])
         self._map = MentalMap("./data/mental_map.json")
         self._reward = RewardEngine("./data")
+        self._sandbox = SandboxExecutor("./data")
 
         self._current_state: dict[str, Any] = {}
         self._pending_chat: list[dict] = []
@@ -257,6 +259,9 @@ Pending player messages: {self._pending_chat}"""
         # Queue skills for the rule engine
         self._current_skill_queue = self._composer.compose(intent, self._current_state)
 
+        # If no skills found, try to generate one via the sandbox
+        await self._maybe_propose_new_skill(intent, reasoning)
+
         # Respond in chat if addressed
         if chat_msg and self._pending_chat:
             await self._game.say(chat_msg)
@@ -336,3 +341,60 @@ Pending player messages: {self._pending_chat}"""
         pruned = self._composer.prune_failing()
         if pruned:
             logger.info(f"Pruned failing skills: {pruned}")
+        sandbox_pruned = self._sandbox.prune()
+        if sandbox_pruned:
+            logger.info(f"Pruned sandbox skills: {sandbox_pruned}")
+
+    # ── Self-modification ─────────────────────────────────────────────────────
+
+    async def propose_skill(self, name: str, code: str, description: str = "") -> bool:
+        """
+        Integrate agent-written code into the sandbox.
+        Returns True if the code passed validation and was integrated.
+        """
+        result = self._sandbox.propose(name, code, description)
+        if result.ok:
+            logger.info(f"[Self-mod] Integrated sandbox skill '{name}'")
+            self._journal.record(JournalEntry(
+                text=f"Wrote new skill '{name}': {description}",
+                scene=self._current_state.get("scene", "unknown"),
+                tags=["self_modification", "new_skill"],
+            ))
+        else:
+            logger.warning(f"[Self-mod] Rejected '{name}' ({result.stage}): {result.reason}")
+        return result.ok
+
+    async def _maybe_propose_new_skill(self, intent: str, reasoning: str) -> None:
+        """
+        Occasionally ask the LLM to write a new sandbox skill if the current
+        intent has no matching skills in the database.
+        Only runs when the skill queue is empty and intent is known.
+        """
+        if self._current_skill_queue:
+            return  # already have skills to run
+        if not intent or intent == "explore":
+            return  # too generic to write a useful skill for
+
+        PROPOSE_PROMPT = (
+            "You are writing a Python helper function for an autonomous game agent.\n"
+            "The function will run inside a sandboxed module. It may NOT import os, subprocess, "
+            "socket, or any I/O modules. It MAY use math, random, time, dataclasses, typing, json, "
+            "and the standard library (safe modules only).\n\n"
+            f"Write a single Python function named `run_{intent}` that implements the intent "
+            f"'{intent}' based on this reasoning: {reasoning}\n\n"
+            "The function should accept a `state: dict` argument (the current game state) "
+            "and return a dict with keys: action (str), params (dict).\n"
+            "Respond with ONLY the Python code — no markdown, no explanations."
+        )
+        code = await self._llm.complete("You write safe Python code.", PROPOSE_PROMPT)
+        if not code:
+            return
+
+        # Strip markdown fences if LLM added them
+        code = code.strip()
+        if code.startswith("```"):
+            lines = code.split("\n")
+            code = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+        skill_name = f"auto_{intent}"
+        await self.propose_skill(skill_name, code, description=f"Auto-generated for intent={intent}")

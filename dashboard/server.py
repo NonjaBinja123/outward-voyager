@@ -86,8 +86,9 @@ def get_novelty() -> JSONResponse:
 
 @app.get("/api/mental_map")
 def get_mental_map() -> JSONResponse:
-    data = _read_json(DATA_DIR / "mental_map.json", {"locations": {}})
-    locs = list(data.get("locations", {}).values())
+    # MentalMap saves the locations dict directly (no "locations" wrapper)
+    data = _read_json(DATA_DIR / "mental_map.json", {})
+    locs = list(data.values()) if isinstance(data, dict) else []
     locs.sort(key=lambda l: l.get("visit_count", 0), reverse=True)
     return JSONResponse(locs)
 
@@ -111,6 +112,13 @@ def get_self_modifications() -> JSONResponse:
     records = _read_jsonl(DATA_DIR / "self_modifications.jsonl", limit=30)
     records.reverse()  # newest first
     return JSONResponse(records)
+
+
+@app.get("/api/goals")
+def get_goals() -> JSONResponse:
+    session = _read_json(DATA_DIR / "session_goals.json", [])
+    long_term = _read_json(DATA_DIR / "long_term_goals.json", [])
+    return JSONResponse({"session": session, "long_term": long_term})
 
 
 @app.get("/api/skills")
@@ -198,6 +206,10 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card" id="card-sandbox">
     <h2>Self-Modifications</h2>
     <div id="sandbox-body">Loading...</div>
+  </div>
+  <div class="card" id="card-goals">
+    <h2>Active Goals</h2>
+    <div id="goals-body">Loading...</div>
   </div>
   <div class="card" id="card-novelty">
     <h2>Novelty (top discoveries)</h2>
@@ -314,11 +326,30 @@ async function checkStatus() {
   }
 }
 
+async function refreshGoals() {
+  const data = await fetchJSON('/api/goals');
+  const session = (data.session || []).filter(g => !g.completed);
+  const longTerm = (data.long_term || []).filter(g => !g.completed);
+  const allGoals = [...session.map(g => ({...g, _type: 'session'})),
+                    ...longTerm.map(g => ({...g, _type: 'long-term'}))];
+  if (!allGoals.length) {
+    document.getElementById('goals-body').innerHTML = '<span style="color:#8b949e">No active goals</span>';
+    return;
+  }
+  allGoals.sort((a, b) => (b.priority || 5) - (a.priority || 5));
+  const rows = allGoals.map(g =>
+    `<tr><td>${g.priority || 5}</td><td>${g.description}</td><td><span class="tag">${g._type}</span></td></tr>`
+  ).join('');
+  document.getElementById('goals-body').innerHTML = `
+    <table><thead><tr><th>Pri</th><th>Goal</th><th>Type</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
+}
+
 async function refreshAll() {
   document.getElementById('last-refresh').textContent = 'Refreshing...';
   await Promise.all([
     refreshPrefs(), refreshCombat(), refreshMap(),
-    refreshSkills(), refreshSandbox(), refreshNovelty(), checkStatus()
+    refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus()
   ]);
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }

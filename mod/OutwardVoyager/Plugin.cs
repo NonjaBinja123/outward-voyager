@@ -12,6 +12,7 @@ public class Plugin : BasePlugin
     internal static WebSocketServer? WsServer;
     internal static GameStateReader? StateReader;
     internal static ActionExecutor? Executor;
+    internal static NavigationController? NavController;
 
     public override void Load()
     {
@@ -27,6 +28,9 @@ public class Plugin : BasePlugin
 
         // StatePusher pushes game state to agent every 2s
         AddComponent<StatePusher>();
+
+        // NavigationController drives character movement toward a target each frame
+        NavController = AddComponent<NavigationController>();
 
         // ChatHook patches ChatManager to relay player messages to agent
         ChatHook.Apply();

@@ -75,7 +75,7 @@ class Orchestrator:
         self._current_state = msg
         scene = msg.get("scene", "unknown")
         player = msg.get("player", {})
-        logger.info(
+        logger.debug(
             f"State: scene={scene} "
             f"hp={player.get('health', '?')}/{player.get('max_health', '?')} "
             f"pos=({player.get('pos_x', '?'):.1f},{player.get('pos_z', '?'):.1f})"

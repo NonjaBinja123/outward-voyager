@@ -43,17 +43,17 @@ public static class ChatHook
 
     [HarmonyPatch(typeof(ChatManager), nameof(ChatManager.OnReceiveChatMessage))]
     [HarmonyPostfix]
-    private static void OnReceiveChatMessage_Postfix(string _senderName, string _message)
+    private static void OnReceiveChatMessage_Postfix(string _charUID, string _message)
     {
         // Don't echo the agent's own messages back
-        if (_senderName == "Voyager") return;
+        if (_charUID == "Voyager") return;
 
-        Plugin.Log.LogInfo($"[Chat] {_senderName}: {_message}");
+        Plugin.Log.LogInfo($"[Chat] {_charUID}: {_message}");
 
         _ = Plugin.WsServer?.SendAsync(new
         {
             type = "chat",
-            player = _senderName,
+            player = _charUID,
             message = _message,
         });
     }

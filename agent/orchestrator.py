@@ -299,9 +299,31 @@ Pending player messages: {self._pending_chat}"""
         while True:
             await asyncio.sleep(self._rule_interval)
             try:
-                await self._execute_next_skill()
+                # In combat: pause non-combat skills and let the agent react
+                if self._current_state.get("player", {}).get("in_combat", False):
+                    await self._handle_in_combat()
+                else:
+                    await self._execute_next_skill()
             except Exception as e:
                 logger.error(f"Rule engine error: {e}")
+
+    async def _handle_in_combat(self) -> None:
+        """
+        Very basic combat reaction: the agent doesn't fight yet (no combat
+        commands implemented), but it pauses its current plan, cancels any
+        active navigation, and cries for help if health is critical.
+        """
+        player = self._current_state.get("player", {})
+        hp = player.get("health", 100)
+        max_hp = player.get("max_health", 100)
+        hp_pct = hp / max(1, max_hp)
+
+        # Cancel navigation — don't walk into danger
+        await self._game.navigate_cancel()
+
+        if hp_pct < 0.2:
+            logger.warning(f"[Combat] HP critical: {hp_pct:.0%}")
+            await self._game.say("Help! I'm in danger!")
 
     async def _execute_next_skill(self) -> None:
         if not self._current_skill_queue:
@@ -314,9 +336,13 @@ Pending player messages: {self._pending_chat}"""
             logger.debug(f"Preconditions not met for {skill.name}, skipping.")
             return
 
-        # Execute
+        # Execute — handle "wait" locally so it never reaches the game mod
         logger.info(f"Executing skill: {skill.name}")
-        await self._game.send(skill.action_type, skill.parameters)
+        if skill.action_type == "wait":
+            seconds = float(skill.parameters.get("seconds", 2.0))
+            await asyncio.sleep(seconds)
+        else:
+            await self._game.send(skill.action_type, skill.parameters)
 
         # Verify result — wait for next state push (mod pushes every 2s)
         await asyncio.sleep(2.5)

@@ -9,6 +9,7 @@ checking preconditions and verifying results.
 """
 import asyncio
 import logging
+import re
 from typing import Any
 
 from game_client import GameClient
@@ -16,11 +17,29 @@ from llm_router import LLMRouter
 from memory.goals import Goal, GoalSystem
 from memory.journal import AdventureJournal, JournalEntry
 from memory.mental_map import MentalMap
+from reward.engine import RewardEngine
 from skills.composer import SkillComposer
 from skills.database import SkillDatabase
 from skills.schema import Skill
 
 logger = logging.getLogger(__name__)
+
+# Matches "walk/run/go/move to the dead guy/corpse/body" and variants
+_NAV_DEAD_RE = re.compile(
+    r"\b(walk|run|go|move)\b.{0,30}\b(dead\s*(guy|man|body|person|one)|corpse|body|bodies)\b",
+    re.IGNORECASE,
+)
+
+# Matches "what do you see" / "look around" / "scan" / "what's nearby"
+_LOOK_RE = re.compile(
+    r"\b(what do you see|look around|what.s nearby|scan|what.s around)\b",
+    re.IGNORECASE,
+)
+
+CHAT_SYSTEM_PROMPT = """You are Voyager, an autonomous AI agent playing Outward Definitive Edition.
+A player is talking to you in-game. Respond naturally and briefly (1-2 sentences).
+You are curious, independent, and friendly when addressed.
+Respond with ONLY the text you want to say — no JSON, no formatting, no quotes."""
 
 STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent exploring the game Outward Definitive Edition.
 You have curiosity-driven goals and develop preferences from experience.
@@ -47,6 +66,7 @@ class Orchestrator:
         goal_cfg = config["goals"]
         self._goals = GoalSystem(goal_cfg["session_goals_path"], goal_cfg["long_term_goals_path"])
         self._map = MentalMap("./data/mental_map.json")
+        self._reward = RewardEngine("./data")
 
         self._current_state: dict[str, Any] = {}
         self._pending_chat: list[dict] = []
@@ -60,6 +80,9 @@ class Orchestrator:
         self._game.on("game_state", self._on_game_state)
         self._game.on("chat", self._on_chat)
         self._game.on("ack", self._on_ack)
+        self._game.on("nav_arrived", self._on_nav_arrived)
+        self._game.on("nav_update", self._on_nav_update)
+        self._game.on("scan_result", self._on_scan_result)
 
     async def run(self) -> None:
         """Start all loops concurrently."""
@@ -83,14 +106,112 @@ class Orchestrator:
         if scene and scene != "unknown":
             self._map.visit(scene)
 
+        # Feed state into reward engine — tracks novelty, preferences, survival
+        self._reward.process(msg)
+
     async def _on_chat(self, msg: dict) -> None:
-        logger.info(f"Chat from {msg.get('player')}: {msg.get('message')}")
+        message = msg.get("message", "")
+        player = msg.get("player", "")
+        logger.info(f"Chat from {player}: {message}")
+
+        # Handle commands immediately — no need to wait for strategy loop
+        if await self._try_nav_to_dead(message):
+            return
+        if await self._try_look_around(message):
+            return
+
+        # Respond to all other chat via LLM immediately
         self._pending_chat.append(msg)
+        await self._respond_to_chat(message, player)
+
+    async def _respond_to_chat(self, message: str, player: str) -> None:
+        """Send player message to LLM and reply in chat right away."""
+        try:
+            scene = self._current_state.get("scene", "unknown")
+            player_state = self._current_state.get("player", {})
+            prompt = (
+                f"Player '{player}' says: {message}\n"
+                f"You are in: {scene}\n"
+                f"Your health: {player_state.get('health', '?')}/{player_state.get('max_health', '?')}"
+            )
+            reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt)
+            if reply:
+                # Strip any quotes the LLM might wrap around its response
+                reply = reply.strip().strip('"').strip("'")
+                await self._game.say(reply)
+                logger.info(f"[Chat] Voyager replied: {reply}")
+        except Exception as e:
+            logger.error(f"Chat response error: {e}")
+
+    async def _try_nav_to_dead(self, message: str) -> bool:
+        """Parse 'walk/run to the dead guy' and navigate. Returns True if handled."""
+        if not _NAV_DEAD_RE.search(message):
+            return False
+
+        run = bool(re.search(r"\brun\b", message, re.IGNORECASE))
+        nearby_dead: list[dict] = self._current_state.get("nearby_dead", [])
+
+        if not nearby_dead:
+            await self._game.say("I don't see any dead bodies nearby.")
+            return True
+
+        target = nearby_dead[0]  # closest
+        await self._game.navigate_to(target["x"], target["y"], target["z"], run=run)
+
+        action = "Running" if run else "Walking"
+        dist = round(target.get("distance", 0))
+        name = target.get("name", "the body")
+        await self._game.say(f"{action} to {name} ({dist}m away).")
+        logger.info(f"[Nav] {action} to {name} at ({target['x']:.1f}, {target['z']:.1f}), dist={dist}")
+        return True
+
+    async def _try_look_around(self, message: str) -> bool:
+        """Trigger a full scene scan when player asks what's nearby."""
+        if not _LOOK_RE.search(message):
+            return False
+        await self._game.say("Looking around...")
+        await self._game.scan_nearby(radius=30.0)
+        return True
+
+    async def _on_scan_result(self, msg: dict) -> None:
+        """Handle scan results from the mod — log everything and summarize in chat."""
+        objects: list[dict] = msg.get("objects", [])
+        count = msg.get("count", 0)
+        logger.info(f"[Scan] {count} objects found:")
+        for obj in objects:
+            logger.info(
+                f"  {obj.get('name'):<40} dist={obj.get('distance'):>5} "
+                f"tag={obj.get('tag')} collider={obj.get('has_collider')} "
+                f"char={obj.get('has_character')} dead={obj.get('is_dead')} "
+                f"active={obj.get('active')}"
+            )
+
+        # Summarize for chat — group by rough category
+        if not objects:
+            await self._game.say("I don't see anything nearby.")
+            return
+
+        # Pick the most interesting items to report (up to 8)
+        names = [o.get("name", "?") for o in objects[:8]]
+        summary = ", ".join(names)
+        remaining = count - len(names)
+        suffix = f" ...and {remaining} more" if remaining > 0 else ""
+        await self._game.say(f"I see: {summary}{suffix}")
+
+    async def _on_nav_arrived(self, msg: dict) -> None:
+        logger.info("[Nav] Arrived at destination.")
+
+    async def _on_nav_update(self, msg: dict) -> None:
+        dist = msg.get("distance", 0)
+        logger.debug(f"[Nav] Distance remaining: {dist:.1f}")
 
     async def _on_ack(self, msg: dict) -> None:
         action = msg.get("action", "")
         success = msg.get("success", False)
-        logger.debug(f"ACK {action} success={success}")
+        if not success:
+            logger.warning(f"ACK {action} failed: {msg.get('reason', '?')}")
+        else:
+            logger.debug(f"ACK {action} ok")
 
     # ── Strategy loop ────────────────────────────────────────────────────────
 
@@ -107,10 +228,13 @@ class Orchestrator:
         recent = self._journal.recent(5)
         familiar = self._map.most_familiar(3)
 
+        personality = self._reward.preferences.describe_personality()
+
         user_msg = f"""Current game state: {self._current_state}
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
 Familiar locations: {[l.scene for l in familiar]}
+Personality: {personality}
 Pending player messages: {self._pending_chat}"""
 
         response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg)

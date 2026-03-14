@@ -62,3 +62,12 @@ class GameClient:
 
     async def move(self, direction: str, distance: float = 5.0) -> None:
         await self.send("move", {"direction": direction, "distance": distance})
+
+    async def navigate_to(self, x: float, y: float, z: float, run: bool = False) -> None:
+        await self.send("navigate_to", {"x": x, "y": y, "z": z, "run": run})
+
+    async def navigate_cancel(self) -> None:
+        await self.send("navigate_cancel")
+
+    async def scan_nearby(self, radius: float = 30.0) -> None:
+        await self.send("scan_nearby", {"radius": radius})

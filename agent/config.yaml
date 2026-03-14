@@ -1,0 +1,57 @@
+# Outward Voyager Agent Configuration
+
+websocket:
+  host: localhost
+  port: 9999
+
+llm:
+  # Priority order — first available wins each cycle
+  priority:
+    - ollama
+    - claude
+    - openai
+    - gemini
+
+  providers:
+    ollama:
+      base_url: http://localhost:11434
+      model: llama3.2
+      enabled: true
+
+    claude:
+      model: claude-opus-4-6
+      enabled: false  # set to true and add ANTHROPIC_API_KEY env var
+
+    openai:
+      model: gpt-4o
+      enabled: false  # set to true and add OPENAI_API_KEY env var
+
+    gemini:
+      model: gemini-2.0-flash
+      enabled: false  # set to true and add GOOGLE_API_KEY env var
+
+agent:
+  # How often the strategy loop fires (seconds)
+  strategy_interval: 30
+  # How often the rule engine fires (seconds)
+  rule_interval: 2
+  # Max retries before escalating to Josh via chat
+  max_retries: 3
+  # Agent's name in chat
+  chat_name: Voyager
+
+memory:
+  chroma_path: ./data/chroma
+  journal_collection: adventure_journal
+  max_journal_entries: 10000
+
+skills:
+  db_path: ./data/skills.db
+
+goals:
+  session_goals_path: ./data/session_goals.json
+  long_term_goals_path: ./data/long_term_goals.json
+
+logging:
+  level: INFO
+  file: ./logs/voyager.log

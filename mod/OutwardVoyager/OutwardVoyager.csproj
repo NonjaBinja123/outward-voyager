@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>OutwardVoyager</AssemblyName>
+    <RootNamespace>OutwardVoyager</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- Path to BepInEx/core in the game folder -->
+    <BepInExCorePath>C:\Program Files (x86)\Steam\steamapps\common\Outward\Outward_Defed\BepInEx\core</BepInExCorePath>
+    <!-- IL2CPP interop assemblies generated on first game launch -->
+    <InteropPath>C:\Program Files (x86)\Steam\steamapps\common\Outward\Outward_Defed\BepInEx\interop</InteropPath>
+    <!-- Output directly into BepInEx/plugins so you can test immediately -->
+    <OutputPath>C:\Program Files (x86)\Steam\steamapps\common\Outward\Outward_Defed\BepInEx\plugins\OutwardVoyager</OutputPath>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>false</CopyLocalLockFileAssemblies>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx.Core">
+      <HintPath>$(BepInExCorePath)\BepInEx.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.Common">
+      <HintPath>$(BepInExCorePath)\BepInEx.Unity.Common.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="BepInEx.Unity.IL2CPP">
+      <HintPath>$(BepInExCorePath)\BepInEx.Unity.IL2CPP.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2CppInterop.Runtime">
+      <HintPath>$(BepInExCorePath)\Il2CppInterop.Runtime.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExCorePath)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <!-- Game interop assemblies -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(InteropPath)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(InteropPath)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Il2Cppmscorlib">
+      <HintPath>$(InteropPath)\Il2Cppmscorlib.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

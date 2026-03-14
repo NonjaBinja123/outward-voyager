@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Agent runtime data (persisted state, not source)
+agent/data/
+agent/logs/
+
+# .NET build artifacts
+mod/OutwardVoyager/obj/
+mod/OutwardVoyager/bin/
+
+# Claude Code local settings
+.claude/settings.local.json

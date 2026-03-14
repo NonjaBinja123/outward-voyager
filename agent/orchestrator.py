@@ -17,6 +17,7 @@ from llm_router import LLMRouter
 from memory.goals import Goal, GoalSystem
 from memory.journal import AdventureJournal, JournalEntry
 from memory.mental_map import MentalMap
+from reward.combat import CombatLearner
 from reward.engine import RewardEngine
 from sandbox.executor import SandboxExecutor
 from skills.composer import SkillComposer
@@ -68,6 +69,7 @@ class Orchestrator:
         self._goals = GoalSystem(goal_cfg["session_goals_path"], goal_cfg["long_term_goals_path"])
         self._map = MentalMap("./data/mental_map.json")
         self._reward = RewardEngine("./data")
+        self._combat = CombatLearner("./data")
         self._sandbox = SandboxExecutor("./data")
 
         self._current_state: dict[str, Any] = {}
@@ -97,6 +99,7 @@ class Orchestrator:
     # ── Event handlers ──────────────────────────────────────────────────────
 
     async def _on_game_state(self, msg: dict) -> None:
+        prev_state = self._current_state
         self._current_state = msg
         scene = msg.get("scene", "unknown")
         player = msg.get("player", {})
@@ -110,6 +113,18 @@ class Orchestrator:
 
         # Feed state into reward engine — tracks novelty, preferences, survival
         self._reward.process(msg)
+
+        # Track combat transitions for combat learning
+        was_in_combat = prev_state.get("player", {}).get("in_combat", False)
+        in_combat = player.get("in_combat", False)
+        is_dead = player.get("is_dead", False)
+
+        if not was_in_combat and in_combat:
+            self._combat.on_combat_enter(msg)
+        elif was_in_combat and in_combat:
+            self._combat.on_combat_tick()
+        elif was_in_combat and not in_combat:
+            self._combat.on_combat_exit(msg, died=is_dead)
 
     async def _on_chat(self, msg: dict) -> None:
         message = msg.get("message", "")
@@ -231,12 +246,14 @@ class Orchestrator:
         familiar = self._map.most_familiar(3)
 
         personality = self._reward.preferences.describe_personality()
+        combat_exp = self._combat.describe_combat_experience()
 
         user_msg = f"""Current game state: {self._current_state}
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
 Familiar locations: {[l.scene for l in familiar]}
 Personality: {personality}
+Combat experience: {combat_exp}
 Pending player messages: {self._pending_chat}"""
 
         response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg)

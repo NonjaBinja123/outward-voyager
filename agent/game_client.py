@@ -71,3 +71,9 @@ class GameClient:
 
     async def scan_nearby(self, radius: float = 30.0) -> None:
         await self.send("scan_nearby", {"radius": radius})
+
+    async def interact(self, radius: float = 3.0) -> None:
+        await self.send("interact", {"radius": radius})
+
+    async def take_item(self, name: str = "", item_id: str = "") -> None:
+        await self.send("take_item", {"name": name, "id": item_id})

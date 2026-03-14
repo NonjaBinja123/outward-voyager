@@ -38,6 +38,24 @@ _LOOK_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches "what are your goals" / "what are you doing" / "goals"
+_GOALS_RE = re.compile(
+    r"\b(what are your goals|what.s your goal|what are you doing|your goals|tell me your goals)\b",
+    re.IGNORECASE,
+)
+
+# Matches "where are you going" / "where are you" / "status"
+_STATUS_RE = re.compile(
+    r"\b(where are you going|where are you|what.s your status|status|how are you)\b",
+    re.IGNORECASE,
+)
+
+# Matches "stop" / "cancel" / "abort" / "halt"
+_STOP_RE = re.compile(
+    r"\b(stop|cancel|abort|halt|freeze)\b",
+    re.IGNORECASE,
+)
+
 CHAT_SYSTEM_PROMPT = """You are Voyager, an autonomous AI agent playing Outward Definitive Edition.
 A player is talking to you in-game. Respond naturally and briefly (1-2 sentences).
 You are curious, independent, and friendly when addressed.
@@ -137,6 +155,12 @@ class Orchestrator:
             return
         if await self._try_look_around(message):
             return
+        if await self._try_report_goals(message):
+            return
+        if await self._try_report_status(message):
+            return
+        if await self._try_stop(message):
+            return
 
         # Respond to all other chat via LLM immediately
         self._pending_chat.append(msg)
@@ -189,6 +213,46 @@ class Orchestrator:
             return False
         await self._game.say("Looking around...")
         await self._game.scan_nearby(radius=30.0)
+        return True
+
+    async def _try_report_goals(self, message: str) -> bool:
+        """Report active goals when asked."""
+        if not _GOALS_RE.search(message):
+            return False
+        goal = self._goals.top_priority()
+        active = self._goals.active_session_goals()
+        if not active:
+            await self._game.say("I don't have any specific goals right now. Just exploring.")
+        else:
+            top = f"Right now: {goal.description}." if goal else ""
+            others = len(active) - 1
+            suffix = f" (and {others} more)" if others > 0 else ""
+            await self._game.say(f"{top}{suffix}")
+        logger.info(f"[Goals] Reported {len(active)} active goals")
+        return True
+
+    async def _try_report_status(self, message: str) -> bool:
+        """Report current nav/health status when asked."""
+        if not _STATUS_RE.search(message):
+            return False
+        player = self._current_state.get("player", {})
+        hp = player.get("health", "?")
+        max_hp = player.get("max_health", "?")
+        scene = self._current_state.get("scene", "unknown")
+        skill = self._current_skill_queue[0].name if self._current_skill_queue else "nothing"
+        await self._game.say(
+            f"HP {hp:.0f}/{max_hp:.0f} in {scene}. Currently doing: {skill}."
+        )
+        return True
+
+    async def _try_stop(self, message: str) -> bool:
+        """Cancel active navigation when player says stop."""
+        if not _STOP_RE.search(message):
+            return False
+        await self._game.navigate_cancel()
+        self._current_skill_queue.clear()
+        await self._game.say("Stopped.")
+        logger.info("[Chat] Player commanded stop — cleared skill queue and cancelled nav")
         return True
 
     async def _on_scan_result(self, msg: dict) -> None:

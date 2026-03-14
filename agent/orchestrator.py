@@ -79,6 +79,7 @@ class Orchestrator:
         self._max_retries: int = config["agent"]["max_retries"]
         self._strategy_interval: float = config["agent"]["strategy_interval"]
         self._rule_interval: float = config["agent"]["rule_interval"]
+        self._last_skill_proposal: dict[str, float] = {}  # intent → timestamp
 
         # Wire up game event handlers
         self._game.on("game_state", self._on_game_state)
@@ -407,16 +408,26 @@ Pending player messages: {self._pending_chat}"""
             logger.warning(f"[Self-mod] Rejected '{name}' ({result.stage}): {result.reason}")
         return result.ok
 
+    _SKILL_PROPOSAL_COOLDOWN = 300.0  # 5 minutes between proposals for the same intent
+
     async def _maybe_propose_new_skill(self, intent: str, reasoning: str) -> None:
         """
         Occasionally ask the LLM to write a new sandbox skill if the current
         intent has no matching skills in the database.
         Only runs when the skill queue is empty and intent is known.
+        Has a per-intent cooldown to avoid spamming the LLM.
         """
         if self._current_skill_queue:
             return  # already have skills to run
         if not intent or intent == "explore":
             return  # too generic to write a useful skill for
+
+        import time
+        now = time.time()
+        last = self._last_skill_proposal.get(intent, 0.0)
+        if now - last < self._SKILL_PROPOSAL_COOLDOWN:
+            return  # still cooling down
+        self._last_skill_proposal[intent] = now
 
         PROPOSE_PROMPT = (
             "You are writing a Python helper function for an autonomous game agent.\n"

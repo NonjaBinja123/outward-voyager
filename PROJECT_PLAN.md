@@ -231,6 +231,12 @@ An autonomous AI agent that plays Outward Definitive Edition, develops emergent 
 
 - **LLM upgrade path** — Llama 3.1:8b is the current local model. Quality is noticeably limited for complex reasoning (strategy loop produced identical outputs for 25+ minutes on llama3.2). Consider upgrading to Claude API (claude-haiku-4-5 for cost-efficiency, claude-sonnet-4-6 for quality). The config already has a `claude` provider slot — just needs `ANTHROPIC_API_KEY` env var and `enabled: true`. Cloud APIs cost money but may be necessary for Tier 2 (self-modification, emergent goals) to function well.
 
+- **Autonomous movement / suggestion model** — Player movement commands should eventually be treated as suggestions, not orders. The agent weighs them against its current health, goals, danger level, and accumulated preferences — then decides whether to comply, refuse, or do something else. A YOLO personality might comply even at low health; a cautious one won't. Config toggle `agent.autonomous_movement` controls this:
+  - `false` (default/dev): movement commands execute directly — full player control
+  - `true` (autonomous): commands route through the agent's decision layer
+
+  The decision layer (to be built in Tier 2) will use: current state + active goals + reward/preference history + LLM reasoning → action or refusal with explanation. The `navigate_to` primitive stays unchanged; only the layer deciding *whether* to call it changes.
+
 - **In-game knowledge acquisition** — The agent should learn about the game from the game itself, not from pre-programmed knowledge. Sources to tap:
   - **Tutorial messages** — hook into the tutorial/hint system in Assembly-CSharp to capture text as it appears
   - **On-screen messages** — notifications, status popups, system messages (item acquired, quest updated, etc.)

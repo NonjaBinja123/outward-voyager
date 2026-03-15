@@ -39,6 +39,11 @@ agent:
   max_retries: 3
   # Agent's name in chat
   chat_name: Voyager
+  # When false: player movement commands execute directly (dev/control mode)
+  # When true: movement suggestions go through the agent's decision layer —
+  # the agent weighs them against its own goals, health, and preferences,
+  # and may comply, refuse, or do something else entirely.
+  autonomous_movement: false
 
 memory:
   chroma_path: ./data/chroma

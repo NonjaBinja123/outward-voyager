@@ -120,6 +120,9 @@ class Orchestrator:
         self._combat = CombatLearner("./data")
         self._sandbox = SandboxExecutor("./data")
 
+        agent_cfg = config.get("agent", {})
+        self._autonomous_movement: bool = agent_cfg.get("autonomous_movement", False)
+
         self._current_state: dict[str, Any] = {}
         self._pending_chat: list[dict] = []
         self._current_skill_queue: list[Skill] = []
@@ -355,8 +358,20 @@ class Orchestrator:
         return True
 
     async def _try_move(self, message: str) -> bool:
-        """Handle directional movement commands: 'go forward', 'move north', etc."""
+        """Handle directional movement commands: 'go forward', 'move north', etc.
+
+        In dev mode (autonomous_movement=false): executes immediately.
+        In autonomous mode (autonomous_movement=true): passes to the agent's
+        decision layer — the agent may comply, refuse, or do something else.
+        """
         if not _MOVE_RE.search(message):
+            return False
+
+        if self._autonomous_movement:
+            # TODO: route through agent decision layer — weigh suggestion against
+            # current health, goals, preferences, and danger level.
+            # For now, fall through to LLM chat response which will at least
+            # reason about whether to comply.
             return False
 
         player = self._current_state.get("player", {})

@@ -15,7 +15,7 @@ llm:
   providers:
     ollama:
       base_url: http://localhost:11434
-      model: llama3.2
+      model: llama3.1:8b
       enabled: true
 
     claude:

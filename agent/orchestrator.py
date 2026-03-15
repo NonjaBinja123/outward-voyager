@@ -8,8 +8,11 @@ Rule engine (every 2s): executes the current skill sequence step by step,
 checking preconditions and verifying results.
 """
 import asyncio
+import json
 import logging
 import re
+import time
+from pathlib import Path
 from typing import Any
 
 from game_client import GameClient
@@ -56,22 +59,21 @@ _STOP_RE = re.compile(
     re.IGNORECASE,
 )
 
-CHAT_SYSTEM_PROMPT = """You are Voyager, an autonomous AI agent playing Outward Definitive Edition.
-A player is talking to you in-game. Respond naturally and briefly (1-2 sentences).
-You are curious, independent, and friendly when addressed.
-Respond with ONLY the text you want to say — no JSON, no formatting, no quotes."""
+CHAT_SYSTEM_PROMPT = """You are Voyager, an AI agent running inside a video game.
+A user is talking to you directly. Be brief and direct — 1-2 sentences max.
+Do not roleplay, do not add atmosphere or flavor. Just answer plainly.
+Respond with ONLY the text — no JSON, no formatting, no quotes."""
 
-STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent exploring the game Outward Definitive Edition.
-You have curiosity-driven goals and develop preferences from experience.
+STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent inside a video game.
 Given the current game state and your goals, decide what to do next.
 
 Respond with a JSON object:
 {
-  "intent": "<tag describing the goal, e.g. 'explore', 'gather_food', 'rest'>",
-  "reasoning": "<brief explanation>",
-  "chat": null  // or a string to say in-game chat if addressed by player
+  "intent": "<action tag, e.g. 'explore', 'gather_food', 'rest', 'interact'>",
+  "reasoning": "<one sentence>",
+  "chat": null
 }
-Keep responses short. You control the agent — think like an independent adventurer."""
+Be specific — use the actual game state data provided. No generic responses."""
 
 
 class Orchestrator:
@@ -98,6 +100,11 @@ class Orchestrator:
         self._strategy_interval: float = config["agent"]["strategy_interval"]
         self._rule_interval: float = config["agent"]["rule_interval"]
         self._last_skill_proposal: dict[str, float] = {}  # intent → timestamp
+
+        self._chat_log_path = Path("./data/chat_log.jsonl")
+        self._pending_dashboard_path = Path("./data/pending_dashboard_chat.json")
+        self._scan_for_player: bool = False  # True only when player explicitly asked to look
+        self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Wire up game event handlers
         self._game.on("game_state", self._on_game_state)
@@ -145,9 +152,57 @@ class Orchestrator:
         elif was_in_combat and not in_combat:
             self._combat.on_combat_exit(msg, died=is_dead)
 
+    def _log_chat(self, role: str, message: str, name: str = "") -> None:
+        """Append a chat entry to data/chat_log.jsonl."""
+        entry = {"timestamp": time.time(), "role": role, "message": message}
+        if name:
+            entry["name"] = name
+        try:
+            with self._chat_log_path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            logger.warning(f"[Chat] Failed to write chat log: {e}")
+
+    async def _poll_dashboard_chat(self) -> None:
+        """Check for messages posted from the dashboard and handle them."""
+        if not self._pending_dashboard_path.exists():
+            return
+        try:
+            text = self._pending_dashboard_path.read_text(encoding="utf-8").strip()
+            if not text:
+                return
+            messages: list[dict] = json.loads(text)
+            if not messages:
+                return
+            # Clear the file before processing so we don't re-process
+            self._pending_dashboard_path.write_text("[]", encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"[Dashboard chat] Failed to read pending: {e}")
+            return
+
+        for item in messages:
+            message = item.get("message", "").strip()
+            if not message:
+                continue
+            self._log_chat("player", message, name="Josh")
+            logger.info(f"[Dashboard] Message from Josh: {message}")
+            # Route through the same handlers as in-game chat
+            if await self._try_nav_to_dead(message):
+                continue
+            if await self._try_look_around(message):
+                continue
+            if await self._try_report_goals(message):
+                continue
+            if await self._try_report_status(message):
+                continue
+            if await self._try_stop(message):
+                continue
+            await self._respond_to_chat(message, "Josh")
+
     async def _on_chat(self, msg: dict) -> None:
         message = msg.get("message", "")
         player = msg.get("player", "")
+        self._log_chat("player", message, name=player)
         logger.info(f"Chat from {player}: {message}")
 
         # Handle commands immediately — no need to wait for strategy loop
@@ -181,6 +236,7 @@ class Orchestrator:
                 # Strip any quotes the LLM might wrap around its response
                 reply = reply.strip().strip('"').strip("'")
                 await self._game.say(reply)
+                self._log_chat("voyager", reply)
                 logger.info(f"[Chat] Voyager replied: {reply}")
         except Exception as e:
             logger.error(f"Chat response error: {e}")
@@ -212,6 +268,8 @@ class Orchestrator:
         if not _LOOK_RE.search(message):
             return False
         await self._game.say("Looking around...")
+        self._log_chat("voyager", "Looking around...")
+        self._scan_for_player = True
         await self._game.scan_nearby(radius=30.0)
         return True
 
@@ -255,30 +313,91 @@ class Orchestrator:
         logger.info("[Chat] Player commanded stop — cleared skill queue and cancelled nav")
         return True
 
+    # Only hard-filter pure engine internals — never physical world objects
+    _ENGINE_NOISE = (
+        "camera", "directionallight", "ambientlight", "audiosource", "audiomixer",
+        "skydome", "skybox", "billboard", "shadowcaster", "reflectionprobe",
+        "defeatspawn", "spawnpoint", "spawnpos", "position1", "position2",
+        "lod_", "_lod", "pfx_", "vfx_", "_pfx", "_vfx", "particlesystem",
+        "terrain_chunk", "occluder", "navmesh", "windzone",
+    )
+
+    def _filter_objects(self, objects: list[dict]) -> list[dict]:
+        """Keep physical world objects; strip only pure engine internals."""
+        result = []
+        for obj in objects:
+            if not obj.get("active"):
+                continue
+            name_lower = obj.get("name", "").lower().replace(" ", "")
+            # Always keep characters
+            if obj.get("has_character"):
+                result.append(obj)
+                continue
+            # Drop pure engine internals
+            if any(n in name_lower for n in self._ENGINE_NOISE):
+                continue
+            # Keep anything with a physical presence (collider = exists in world)
+            if obj.get("has_collider"):
+                result.append(obj)
+        result.sort(key=lambda o: (0 if o.get("has_character") else 1, o.get("distance", 999)))
+        return result
+
     async def _on_scan_result(self, msg: dict) -> None:
-        """Handle scan results from the mod — log everything and summarize in chat."""
+        """Handle scan results from the mod — always log, only speak if player asked."""
         objects: list[dict] = msg.get("objects", [])
         count = msg.get("count", 0)
         logger.info(f"[Scan] {count} objects found:")
         for obj in objects:
             logger.info(
                 f"  {obj.get('name'):<40} dist={obj.get('distance'):>5} "
-                f"tag={obj.get('tag')} collider={obj.get('has_collider')} "
-                f"char={obj.get('has_character')} dead={obj.get('is_dead')} "
-                f"active={obj.get('active')}"
+                f"tag={obj.get('tag')} char={obj.get('has_character')} dead={obj.get('is_dead')}"
             )
 
-        # Summarize for chat — group by rough category
-        if not objects:
-            await self._game.say("I don't see anything nearby.")
+        if not self._scan_for_player:
+            return  # background scan — don't clutter chat
+        self._scan_for_player = False
+
+        meaningful = self._filter_objects(objects)
+
+        if not meaningful:
+            await self._game.say("I don't see anything of note nearby.")
             return
 
-        # Pick the most interesting items to report (up to 8)
-        names = [o.get("name", "?") for o in objects[:8]]
-        summary = ", ".join(names)
-        remaining = count - len(names)
-        suffix = f" ...and {remaining} more" if remaining > 0 else ""
-        await self._game.say(f"I see: {summary}{suffix}")
+        # Build a compact scene summary for the LLM
+        scene = self._current_state.get("scene", "unknown")
+        characters, props = [], []
+        for o in meaningful[:30]:
+            dist = o.get("distance", "?")
+            name = o.get("name", "?")
+            if o.get("has_character"):
+                state = "dead" if o.get("is_dead") else "alive"
+                characters.append(f"- {name} ({dist}m, {state})")
+            else:
+                props.append(f"- {name} ({dist}m)")
+
+        sections = []
+        if characters:
+            sections.append("Characters/creatures:\n" + "\n".join(characters))
+        if props:
+            sections.append("Objects/props:\n" + "\n".join(props))
+        object_list = "\n\n".join(sections)
+
+        prompt = (
+            f"Location: {scene}\n\n"
+            f"Nearby objects (internal game names — translate to plain English):\n{object_list}\n\n"
+            "List what you can see in one or two plain sentences. "
+            "Translate names directly: Candle_01 = candle, WoodenChest = wooden chest, "
+            "IronSword = iron sword, Wolf = wolf, NPC_Merchant = merchant, etc. "
+            "Just list the things. No atmosphere, no descriptions of feeling."
+        )
+        reply = await self._llm.complete(
+            "You are an AI agent. Translate a list of game object names into a plain factual sentence about what is nearby. Be direct.",
+            prompt,
+        )
+        if reply:
+            reply = reply.strip().strip('"').strip("'")
+            await self._game.say(reply)
+            self._log_chat("voyager", reply)
 
     async def _on_nav_arrived(self, msg: dict) -> None:
         logger.info("[Nav] Arrived at destination.")
@@ -364,6 +483,7 @@ Pending player messages: {self._pending_chat}"""
         while True:
             await asyncio.sleep(self._rule_interval)
             try:
+                await self._poll_dashboard_chat()
                 # In combat: pause non-combat skills and let the agent react
                 if self._current_state.get("player", {}).get("in_combat", False):
                     await self._handle_in_combat()

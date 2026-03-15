@@ -14,6 +14,13 @@ public class StatePusher : MonoBehaviour
 
     private void Update()
     {
+        // Drain actions queued from background threads (e.g. WebSocket receive)
+        while (Plugin.MainThreadQueue.TryDequeue(out var action))
+        {
+            try { action(); }
+            catch (Exception ex) { Plugin.Log.LogWarning($"[MainThread] Action failed: {ex.Message}"); }
+        }
+
         if (Time.time < _nextPush) return;
         _nextPush = Time.time + PushInterval;
 

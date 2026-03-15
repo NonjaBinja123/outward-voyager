@@ -78,7 +78,7 @@ outward-voyager/
 - **C#:** Follow standard Unity/BepInEx patterns. Use HarmonyX for patching.
 - **Config:** YAML for agent configuration. JSON for persisted state (goals, mental map).
 - **Logging:** Use Python's logging module. Log all LLM calls, actions, rewards, and self-modifications.
-- **Git:** Conventional commits. Feature branches. Keep mod/ and agent/ changes in separate commits when possible.
+- **Git:** Commit frequently — treat every commit as a save state. Commit whenever a meaningful chunk of work is done, even if incomplete. This lets Josh roll back easily and lets Claude check previous working state. Use conventional commit prefixes (feat/fix/refactor/docs/chore). Keep mod/ and agent/ changes in separate commits when possible, but don't let that block committing.
 
 ## Current phase
 

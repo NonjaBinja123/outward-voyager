@@ -226,3 +226,7 @@ An autonomous AI agent that plays Outward Definitive Edition, develops emergent 
 - **Goal selection system** — deferred from question 4. How exactly should the automatic curriculum work? LLM proposes vs scoring system vs hybrid?
 - **Combat granularity** — how fast does the rule engine need to tick for real-time Outward combat?
 - **Outward's chat system internals** — needs reverse-engineering to confirm hookability
+
+## Side topics / future considerations
+
+- **LLM upgrade path** — Llama 3.1:8b is the current local model. Quality is noticeably limited for complex reasoning (strategy loop produced identical outputs for 25+ minutes on llama3.2). Consider upgrading to Claude API (claude-haiku-4-5 for cost-efficiency, claude-sonnet-4-6 for quality). The config already has a `claude` provider slot — just needs `ANTHROPIC_API_KEY` env var and `enabled: true`. Cloud APIs cost money but may be necessary for Tier 2 (self-modification, emergent goals) to function well.

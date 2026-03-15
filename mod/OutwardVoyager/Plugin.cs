@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using BepInEx;
 using BepInEx.Unity.IL2CPP;
 using BepInEx.Unity.IL2CPP.UnityEngine;
@@ -13,6 +14,12 @@ public class Plugin : BasePlugin
     internal static GameStateReader? StateReader;
     internal static ActionExecutor? Executor;
     internal static NavigationController? NavController;
+
+    /// <summary>
+    /// Actions queued from background threads to run on the Unity main thread.
+    /// Drained every frame by StatePusher.Update().
+    /// </summary>
+    internal static readonly ConcurrentQueue<Action> MainThreadQueue = new();
 
     public override void Load()
     {

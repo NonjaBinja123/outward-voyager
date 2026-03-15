@@ -18,6 +18,13 @@ public class ActionExecutor
 
     public void HandleCommand(string json)
     {
+        // Commands arrive on the WebSocket background thread.
+        // All Unity API calls must run on the main thread — enqueue and return immediately.
+        Plugin.MainThreadQueue.Enqueue(() => ExecuteCommand(json));
+    }
+
+    private void ExecuteCommand(string json)
+    {
         AgentCommand? cmd;
         try
         {
@@ -38,7 +45,7 @@ public class ActionExecutor
                 SendState();
                 break;
             case "say":
-                SayInChat(cmd.Params.GetValueOrDefault("message") as string ?? "");
+                SayInChat(GetString(cmd.Params, "message"));
                 break;
             case "move":
                 MovePlayer(cmd.Params);
@@ -89,10 +96,10 @@ public class ActionExecutor
     {
         try
         {
-            float x = Convert.ToSingle(p.GetValueOrDefault("x") ?? 0f);
-            float y = Convert.ToSingle(p.GetValueOrDefault("y") ?? 0f);
-            float z = Convert.ToSingle(p.GetValueOrDefault("z") ?? 0f);
-            bool run = p.GetValueOrDefault("run") is bool b && b;
+            float x = GetFloat(p, "x", 0f);
+            float y = GetFloat(p, "y", 0f);
+            float z = GetFloat(p, "z", 0f);
+            bool run = GetBool(p, "run");
 
             Plugin.NavController!.SetTarget(new Vector3(x, y, z), run);
             _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "navigate_to", success = true });
@@ -111,7 +118,7 @@ public class ActionExecutor
     /// </summary>
     private void ScanNearby(Dictionary<string, object?> p)
     {
-        float radius = Convert.ToSingle(p.GetValueOrDefault("radius") ?? 30f);
+        float radius = GetFloat(p, "radius", 30f);
         try
         {
             var playerChar = CharacterManager.Instance?.GetFirstLocalCharacter();
@@ -190,7 +197,7 @@ public class ActionExecutor
     /// </summary>
     private void Interact(Dictionary<string, object?> p)
     {
-        float radius = Convert.ToSingle(p.GetValueOrDefault("radius") ?? 3f);
+        float radius = GetFloat(p, "radius", 3f);
         try
         {
             var character = CharacterManager.Instance?.GetFirstLocalCharacter();
@@ -236,8 +243,8 @@ public class ActionExecutor
     /// </summary>
     private void TakeItem(Dictionary<string, object?> p)
     {
-        string targetName = p.GetValueOrDefault("name") as string ?? "";
-        string targetId   = p.GetValueOrDefault("id")   as string ?? "";
+        string targetName = GetString(p, "name");
+        string targetId   = GetString(p, "id");
         try
         {
             var character = CharacterManager.Instance?.GetFirstLocalCharacter();
@@ -311,6 +318,35 @@ public class ActionExecutor
     private void SendError(string reason)
     {
         _ = Plugin.WsServer!.SendAsync(new { type = "error", reason });
+    }
+
+    // ── Parameter helpers ────────────────────────────────────────────────────
+    // JSON deserialization puts params into Dictionary<string, object?> where
+    // values are JsonElement — Convert.ToSingle(JsonElement) throws.
+    // These helpers unwrap JsonElement correctly for each type.
+
+    private static float GetFloat(Dictionary<string, object?> p, string key, float def)
+    {
+        var val = p.GetValueOrDefault(key);
+        if (val is JsonElement je) return je.TryGetSingle(out float f) ? f : def;
+        if (val is null) return def;
+        return Convert.ToSingle(val);
+    }
+
+    private static bool GetBool(Dictionary<string, object?> p, string key, bool def = false)
+    {
+        var val = p.GetValueOrDefault(key);
+        if (val is JsonElement je && je.ValueKind == JsonValueKind.True)  return true;
+        if (val is JsonElement je2 && je2.ValueKind == JsonValueKind.False) return false;
+        if (val is bool b) return b;
+        return def;
+    }
+
+    private static string GetString(Dictionary<string, object?> p, string key, string def = "")
+    {
+        var val = p.GetValueOrDefault(key);
+        if (val is JsonElement je) return je.GetString() ?? def;
+        return val as string ?? def;
     }
 }
 

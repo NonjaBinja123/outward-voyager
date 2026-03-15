@@ -19,7 +19,6 @@ public class NavigationController : MonoBehaviour
     private bool _run;
     private LocalCharacterControl? _lcc;
     private CharacterController? _cc;
-    private UnityEngine.AI.NavMeshAgent? _navAgent;
 
     private const float WalkSpeed = 3.0f;
     private const float RunSpeed  = 5.5f;
@@ -82,11 +81,10 @@ public class NavigationController : MonoBehaviour
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         if (character == null) return;
 
-        _lcc      = character.GetComponent<LocalCharacterControl>();
-        _cc       = character.GetComponent<CharacterController>();
-        _navAgent = character.NavMeshAgent;
+        _lcc = character.GetComponent<LocalCharacterControl>();
+        _cc  = character.GetComponent<CharacterController>();
 
-        Plugin.Log.LogInfo($"[Nav] Components — LCC:{_lcc != null} CC:{_cc != null} NavAgent:{_navAgent != null} NavAgentValid:{character.NavMeshAgentValid}");
+        Plugin.Log.LogInfo($"[Nav] Components — LCC:{_lcc != null} CC:{_cc != null}");
 
         if (_lcc != null)
         {
@@ -106,23 +104,12 @@ public class NavigationController : MonoBehaviour
             _lcc.enabled = true;
             Plugin.Log.LogInfo("[Nav] LocalCharacterControl restored.");
         }
-        _lcc      = null;
-        _cc       = null;
-        _navAgent = null;
+        _lcc = null;
+        _cc  = null;
     }
 
     private void MoveCharacter(Character character, Vector3 dir, float speed)
     {
-        // Try NavMeshAgent first — this is Outward's native pathfinding system.
-        // NavMeshAgent handles steering, gravity, and avoidance automatically.
-        if (_navAgent != null && character.NavMeshAgentValid)
-        {
-            // NavMeshAgent drives movement via SetDestination; we steer it here
-            // by updating velocity directly for frame-by-frame control.
-            _navAgent.Move(dir * speed * Time.deltaTime);
-            return;
-        }
-
         // CharacterController.SimpleMove handles gravity automatically.
         if (_cc != null)
         {

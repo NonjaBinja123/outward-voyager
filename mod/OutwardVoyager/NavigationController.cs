@@ -3,18 +3,19 @@ using UnityEngine;
 namespace OutwardVoyager;
 
 /// <summary>
-/// Drives the player character toward a navigation target each frame.
+/// Drives the player character toward a navigation target each frame via
+/// CharacterController.SimpleMove. Player input is NOT disabled — LocalCharacterControl
+/// remains active so chat and all other input continues to work.
 ///
-/// Current approach: CharacterController.SimpleMove via the CC cached on Character.
-/// Components are resolved lazily on the first Update() tick after a target is set,
-/// so the character is guaranteed to be loaded before we try to read its components.
+/// Known limitation: walk animation does not play because we are moving through
+/// CharacterController directly rather than through Outward's input pipeline.
+/// Character is rotated to face the movement direction so it does not slide backwards.
 /// </summary>
 public class NavigationController : MonoBehaviour
 {
     private Vector3? _target;
     private bool _run;
     private bool _componentsResolved;
-    private LocalCharacterControl? _lcc;
     private CharacterController? _cc;
 
     private const float WalkSpeed = 3.0f;
@@ -29,7 +30,7 @@ public class NavigationController : MonoBehaviour
     {
         _target = target;
         _run = run;
-        _componentsResolved = false; // force re-resolution on next Update
+        _componentsResolved = false;
         Plugin.Log.LogInfo($"[Nav] Target set: ({target.x:F1},{target.y:F1},{target.z:F1}) run={run}");
     }
 
@@ -37,7 +38,8 @@ public class NavigationController : MonoBehaviour
     {
         if (!_target.HasValue) return;
         _target = null;
-        RestorePlayerInput();
+        _cc = null;
+        _componentsResolved = false;
         Plugin.Log.LogInfo("[Nav] Navigation cancelled.");
     }
 
@@ -48,24 +50,23 @@ public class NavigationController : MonoBehaviour
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         if (character == null) return;
 
-        // Resolve components lazily — character is confirmed loaded at this point
+        // Resolve CharacterController lazily — character guaranteed loaded here
         if (!_componentsResolved)
         {
-            _lcc = character.GetComponent<LocalCharacterControl>();
-            _cc  = character.GetComponent<CharacterController>();
+            _cc = character.GetComponent<CharacterController>();
             _componentsResolved = true;
-            Plugin.Log.LogInfo($"[Nav] Components resolved — LCC:{_lcc != null} CC:{_cc != null}");
+            Plugin.Log.LogInfo($"[Nav] CharacterController found: {_cc != null}");
 
-            if (_lcc != null)
+            if (_cc == null)
             {
-                _lcc.enabled = false;
-                Plugin.Log.LogInfo("[Nav] LocalCharacterControl suspended.");
-            }
-            else
-            {
-                Plugin.Log.LogWarning("[Nav] LocalCharacterControl not found on character.");
+                Plugin.Log.LogWarning("[Nav] No CharacterController on player — cannot move. Cancelling.");
+                _target = null;
+                _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "no_movement_api" });
+                return;
             }
         }
+
+        if (_cc == null) return;
 
         var pos = character.transform.position;
         var toTarget = _target.Value - pos;
@@ -76,44 +77,28 @@ public class NavigationController : MonoBehaviour
         {
             Plugin.Log.LogInfo("[Nav] Arrived at target.");
             _target = null;
-            RestorePlayerInput();
+            _cc = null;
+            _componentsResolved = false;
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_arrived" });
             return;
         }
 
         var dir = toTarget.normalized;
-        float speed = _run ? RunSpeed : WalkSpeed;
 
-        if (_cc != null)
-        {
-            _cc.SimpleMove(dir * speed);
-        }
-        else
-        {
-            // No known movement API available yet. Log once then stop navigating
-            // to avoid spamming and causing physics issues.
-            Plugin.Log.LogWarning("[Nav] No CharacterController found — movement not implemented for this character type. Cancelling.");
-            _target = null;
-            RestorePlayerInput();
-            _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "no_movement_api" });
-        }
+        // Rotate character to face direction of movement so it doesn't slide backwards
+        character.transform.rotation = Quaternion.RotateTowards(
+            character.transform.rotation,
+            Quaternion.LookRotation(dir),
+            360f * Time.deltaTime
+        );
+
+        float speed = _run ? RunSpeed : WalkSpeed;
+        _cc.SimpleMove(dir * speed);
 
         if (Time.time - _lastUpdateTime >= NavUpdateInterval)
         {
             _lastUpdateTime = Time.time;
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_update", distance = dist });
         }
-    }
-
-    private void RestorePlayerInput()
-    {
-        if (_lcc != null)
-        {
-            _lcc.enabled = true;
-            Plugin.Log.LogInfo("[Nav] LocalCharacterControl restored.");
-        }
-        _lcc = null;
-        _cc  = null;
-        _componentsResolved = false;
     }
 }

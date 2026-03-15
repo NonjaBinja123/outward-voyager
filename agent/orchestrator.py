@@ -353,7 +353,9 @@ class Orchestrator:
             return False
         await self._game.navigate_cancel()
         self._current_skill_queue.clear()
-        await self._game.say("Stopped.")
+        reply = "Stopped."
+        await self._game.say(reply)
+        self._log_chat("voyager", reply)
         logger.info("[Chat] Player commanded stop — cleared skill queue and cancelled nav")
         return True
 
@@ -405,7 +407,9 @@ class Orchestrator:
 
         await self._game.navigate_to(tx, py, tz, run=run)
         verb = "Running" if run else "Moving"
-        await self._game.say(f"{verb} {direction}.")
+        reply = f"{verb} {direction}."
+        await self._game.say(reply)
+        self._log_chat("voyager", reply)
         logger.info(f"[Nav] Player-commanded move {direction}: ({px:.1f},{pz:.1f}) → ({tx:.1f},{tz:.1f})")
         return True
 

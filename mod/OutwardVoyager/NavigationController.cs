@@ -5,18 +5,15 @@ namespace OutwardVoyager;
 /// <summary>
 /// Drives the player character toward a navigation target each frame.
 ///
-/// Strategy:
-///   1. Disable LocalCharacterControl so player input doesn't fight our movement.
-///   2. Drive movement via CharacterController.SimpleMove (Unity standard).
-///   3. Re-enable LocalCharacterControl on arrival or cancel.
-///
-/// Fallback: if CharacterController isn't found, step via transform.Translate.
-/// This is a prototype — sprint not yet implemented (same speed for walk/run).
+/// Current approach: CharacterController.SimpleMove via the CC cached on Character.
+/// Components are resolved lazily on the first Update() tick after a target is set,
+/// so the character is guaranteed to be loaded before we try to read its components.
 /// </summary>
 public class NavigationController : MonoBehaviour
 {
     private Vector3? _target;
     private bool _run;
+    private bool _componentsResolved;
     private LocalCharacterControl? _lcc;
     private CharacterController? _cc;
 
@@ -32,8 +29,8 @@ public class NavigationController : MonoBehaviour
     {
         _target = target;
         _run = run;
+        _componentsResolved = false; // force re-resolution on next Update
         Plugin.Log.LogInfo($"[Nav] Target set: ({target.x:F1},{target.y:F1},{target.z:F1}) run={run}");
-        SuspendPlayerInput();
     }
 
     public void Cancel()
@@ -51,6 +48,25 @@ public class NavigationController : MonoBehaviour
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         if (character == null) return;
 
+        // Resolve components lazily — character is confirmed loaded at this point
+        if (!_componentsResolved)
+        {
+            _lcc = character.GetComponent<LocalCharacterControl>();
+            _cc  = character.GetComponent<CharacterController>();
+            _componentsResolved = true;
+            Plugin.Log.LogInfo($"[Nav] Components resolved — LCC:{_lcc != null} CC:{_cc != null}");
+
+            if (_lcc != null)
+            {
+                _lcc.enabled = false;
+                Plugin.Log.LogInfo("[Nav] LocalCharacterControl suspended.");
+            }
+            else
+            {
+                Plugin.Log.LogWarning("[Nav] LocalCharacterControl not found on character.");
+            }
+        }
+
         var pos = character.transform.position;
         var toTarget = _target.Value - pos;
         toTarget.y = 0f;
@@ -67,33 +83,25 @@ public class NavigationController : MonoBehaviour
 
         var dir = toTarget.normalized;
         float speed = _run ? RunSpeed : WalkSpeed;
-        MoveCharacter(character, dir, speed);
+
+        if (_cc != null)
+        {
+            _cc.SimpleMove(dir * speed);
+        }
+        else
+        {
+            // No known movement API available yet. Log once then stop navigating
+            // to avoid spamming and causing physics issues.
+            Plugin.Log.LogWarning("[Nav] No CharacterController found — movement not implemented for this character type. Cancelling.");
+            _target = null;
+            RestorePlayerInput();
+            _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "no_movement_api" });
+        }
 
         if (Time.time - _lastUpdateTime >= NavUpdateInterval)
         {
             _lastUpdateTime = Time.time;
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_update", distance = dist });
-        }
-    }
-
-    private void SuspendPlayerInput()
-    {
-        var character = CharacterManager.Instance?.GetFirstLocalCharacter();
-        if (character == null) return;
-
-        _lcc = character.GetComponent<LocalCharacterControl>();
-        _cc  = character.GetComponent<CharacterController>();
-
-        Plugin.Log.LogInfo($"[Nav] Components — LCC:{_lcc != null} CC:{_cc != null}");
-
-        if (_lcc != null)
-        {
-            _lcc.enabled = false;
-            Plugin.Log.LogInfo("[Nav] LocalCharacterControl suspended.");
-        }
-        else
-        {
-            Plugin.Log.LogWarning("[Nav] LocalCharacterControl not found — player may still have input.");
         }
     }
 
@@ -106,20 +114,6 @@ public class NavigationController : MonoBehaviour
         }
         _lcc = null;
         _cc  = null;
-    }
-
-    private void MoveCharacter(Character character, Vector3 dir, float speed)
-    {
-        // CharacterController.SimpleMove handles gravity automatically.
-        if (_cc != null)
-        {
-            Plugin.Log.LogInfo("[Nav] Moving via CharacterController.SimpleMove");
-            _cc.SimpleMove(dir * speed);
-            return;
-        }
-
-        // Fallback: direct transform step. Works but bypasses physics.
-        Plugin.Log.LogWarning("[Nav] Falling back to transform.Translate — no CC or NavAgent found.");
-        character.transform.Translate(dir * speed * Time.deltaTime, Space.World);
+        _componentsResolved = false;
     }
 }

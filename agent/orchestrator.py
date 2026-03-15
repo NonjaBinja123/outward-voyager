@@ -375,13 +375,14 @@ class Orchestrator:
             return False
 
         player = self._current_state.get("player", {})
-        if not player:
-            await self._game.say("I don't have position data yet.")
-            return True
-
         px = float(player.get("pos_x", 0))
         py = float(player.get("pos_y", 0))
         pz = float(player.get("pos_z", 0))
+
+        # If all three are zero the state hasn't populated yet — don't navigate to (0,0,0)
+        if not player or (px == 0.0 and py == 0.0 and pz == 0.0):
+            await self._game.say("I don't have position data yet.")
+            return True
 
         m = _DIRECTION_RE.search(message)
         direction = m.group(1).lower() if m else "forward"

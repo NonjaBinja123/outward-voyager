@@ -62,7 +62,20 @@ _STOP_RE = re.compile(
 CHAT_SYSTEM_PROMPT = """You are Voyager, an AI agent running inside a video game.
 A user is talking to you directly. Be brief and direct — 1-2 sentences max.
 Do not roleplay, do not add atmosphere or flavor. Just answer plainly.
-Respond with ONLY the text — no JSON, no formatting, no quotes."""
+Respond with ONLY the text — no JSON, no formatting, no quotes.
+
+IMPORTANT — your actual capabilities (do not claim anything outside this list):
+- navigate_to: move to a specific position in the world
+- navigate_cancel: stop moving
+- scan_nearby: detect nearby objects and entities
+- interact: interact with a nearby object or NPC (requires UID from a scan)
+- take_item: pick up a nearby item (requires UID from a scan)
+- say: send a chat message
+
+You CANNOT: attack, use items, crouch, sprint, dodge, open menus, or perform
+directional movement (forward/back/left/right). If asked to do something outside
+your capabilities, say so honestly. Base your answers on the actual game state
+provided — do not invent values for health, position, or anything else."""
 
 STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent inside a video game.
 Given the current game state and your goals, decide what to do next.
@@ -227,11 +240,18 @@ class Orchestrator:
         """Send player message to LLM and reply in chat right away."""
         try:
             scene = self._current_state.get("scene", "unknown")
-            player_state = self._current_state.get("player", {})
+            p = self._current_state.get("player", {})
+            state_summary = (
+                f"Scene: {scene}\n"
+                f"Health: {p.get('health', '?')}/{p.get('max_health', '?')}  "
+                f"Stamina: {p.get('stamina', '?')}/{p.get('max_stamina', '?')}  "
+                f"Mana: {p.get('mana', '?')}/{p.get('max_mana', '?')}\n"
+                f"Position: ({p.get('pos_x', '?'):.1f}, {p.get('pos_z', '?'):.1f})  "
+                f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
+            ) if p else f"Scene: {scene}\n(No player state available)"
             prompt = (
-                f"Player '{player}' says: {message}\n"
-                f"You are in: {scene}\n"
-                f"Your health: {player_state.get('health', '?')}/{player_state.get('max_health', '?')}"
+                f"Current state:\n{state_summary}\n\n"
+                f"{player} says: {message}"
             )
             reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt)
             if reply:

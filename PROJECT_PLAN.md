@@ -230,3 +230,14 @@ An autonomous AI agent that plays Outward Definitive Edition, develops emergent 
 ## Side topics / future considerations
 
 - **LLM upgrade path** — Llama 3.1:8b is the current local model. Quality is noticeably limited for complex reasoning (strategy loop produced identical outputs for 25+ minutes on llama3.2). Consider upgrading to Claude API (claude-haiku-4-5 for cost-efficiency, claude-sonnet-4-6 for quality). The config already has a `claude` provider slot — just needs `ANTHROPIC_API_KEY` env var and `enabled: true`. Cloud APIs cost money but may be necessary for Tier 2 (self-modification, emergent goals) to function well.
+
+- **In-game knowledge acquisition** — The agent should learn about the game from the game itself, not from pre-programmed knowledge. Sources to tap:
+  - **Tutorial messages** — hook into the tutorial/hint system in Assembly-CSharp to capture text as it appears
+  - **On-screen messages** — notifications, status popups, system messages (item acquired, quest updated, etc.)
+  - **Loading/transition screen tips** — Outward shows gameplay tips between scenes; capture and store these
+  - **Quest text** — quest descriptions, objectives, NPC dialogue — rich source of world/mechanic knowledge
+  - **Experimentation** — agent tries an action, observes the outcome, logs what it learned (e.g. "sprinting drains stamina", "crouching reduces detection")
+  - **Character states** — enumerate all states the character can be in (crouching, sprinting, climbing, swimming, encumbered, burning, etc.) and learn their triggers and effects by observation
+  - **Controls / keybindings** — read the game's input map (likely in `InputManager` or `KeyboardInputManager` in Assembly-CSharp, or from the options/help menus) so the agent understands what actions are available and how they map to inputs
+
+  Implementation approach: C# mod hooks capture text events and push them to the agent as `game_message` WebSocket events. Agent stores them in the adventure journal and extracts structured knowledge (mechanic facts, state definitions, control mappings) into a dedicated knowledge base. Over time the agent builds its own understanding of game mechanics purely from observation.

@@ -47,6 +47,10 @@ public class ActionExecutor
             case "say":
                 SayInChat(GetString(cmd.Params, "message"));
                 break;
+            case "display_player_chat":
+                ChatHook.DisplayPlayerMessage(GetString(cmd.Params, "message"));
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "display_player_chat", success = true });
+                break;
             case "move":
                 MovePlayer(cmd.Params);
                 break;

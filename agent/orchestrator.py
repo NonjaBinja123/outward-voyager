@@ -186,6 +186,8 @@ class Orchestrator:
                 continue
             self._log_chat("player", message, name="Josh")
             logger.info(f"[Dashboard] Message from Josh: {message}")
+            # Mirror the message into the in-game chat UI as a real player message
+            await self._game.send("display_player_chat", {"message": message})
             # Route through the same handlers as in-game chat
             if await self._try_nav_to_dead(message):
                 continue

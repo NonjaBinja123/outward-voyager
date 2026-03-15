@@ -39,6 +39,28 @@ public static class ChatHook
         });
     }
 
+    /// <summary>
+    /// Displays a player-originated message (e.g. from the dashboard) in the in-game chat
+    /// exactly as if the player typed it. Suppresses the postfix echo so the agent doesn't
+    /// double-process it.
+    /// </summary>
+    public static void DisplayPlayerMessage(string text)
+    {
+        Plugin.MainThreadQueue.Enqueue(() =>
+        {
+            var chatMgr = ChatManager.Instance;
+            if (chatMgr == null) return;
+            var player = CharacterManager.Instance?.GetFirstLocalCharacter();
+            string uid = player?.UID?.ToString() ?? "local";
+            _suppressNextPlayerEcho = true;
+            chatMgr.OnReceiveChatMessage(uid, text);
+        });
+    }
+
+    // Set to true before calling OnReceiveChatMessage for player-dashboard messages
+    // so the postfix knows not to echo them back to the agent.
+    private static bool _suppressNextPlayerEcho = false;
+
     private static bool TryOnReceiveChatMessage(ChatManager mgr, string text)
     {
         try
@@ -64,6 +86,8 @@ public static class ChatHook
     {
         // Don't echo the agent's own messages back
         if (_message.StartsWith("Voyager: ")) return;
+        // Don't echo dashboard-injected player messages back (already processed by agent)
+        if (_suppressNextPlayerEcho) { _suppressNextPlayerEcho = false; return; }
 
         Plugin.Log.LogInfo($"[Chat] {_charUID}: {_message}");
 

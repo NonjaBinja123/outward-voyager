@@ -59,6 +59,21 @@ _STOP_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Matches movement intent: "go forward", "move north", "walk left", "run south", etc.
+_MOVE_RE = re.compile(
+    r"\b(go|move|walk|run|head|travel)\b.{0,20}\b(forward|back(?:ward)?|left|right|north|south|east|west)\b"
+    r"|\b(forward|back(?:ward)?|left|right|north|south|east|west)\b.{0,10}\b(go|move|walk|run)\b",
+    re.IGNORECASE,
+)
+_DIRECTION_RE = re.compile(
+    r"\b(forward|back(?:ward)?|left|right|north|south|east|west)\b",
+    re.IGNORECASE,
+)
+_RUN_RE = re.compile(r"\brun\b", re.IGNORECASE)
+
+# Movement step distance in world units
+_MOVE_STEP = 20.0
+
 CHAT_SYSTEM_PROMPT = """You are Voyager, an AI agent running inside a video game.
 A user is talking to you directly. Be brief and direct — 1-2 sentences max.
 Do not roleplay, do not add atmosphere or flavor. Just answer plainly.
@@ -212,6 +227,8 @@ class Orchestrator:
                 continue
             if await self._try_stop(message):
                 continue
+            if await self._try_move(message):
+                continue
             await self._respond_to_chat(message, "Josh")
 
     async def _on_chat(self, msg: dict) -> None:
@@ -230,6 +247,8 @@ class Orchestrator:
         if await self._try_report_status(message):
             return
         if await self._try_stop(message):
+            return
+        if await self._try_move(message):
             return
 
         # Respond to all other chat via LLM immediately
@@ -333,6 +352,45 @@ class Orchestrator:
         self._current_skill_queue.clear()
         await self._game.say("Stopped.")
         logger.info("[Chat] Player commanded stop — cleared skill queue and cancelled nav")
+        return True
+
+    async def _try_move(self, message: str) -> bool:
+        """Handle directional movement commands: 'go forward', 'move north', etc."""
+        if not _MOVE_RE.search(message):
+            return False
+
+        player = self._current_state.get("player", {})
+        if not player:
+            await self._game.say("I don't have position data yet.")
+            return True
+
+        px = float(player.get("pos_x", 0))
+        py = float(player.get("pos_y", 0))
+        pz = float(player.get("pos_z", 0))
+
+        m = _DIRECTION_RE.search(message)
+        direction = m.group(1).lower() if m else "forward"
+        run = bool(_RUN_RE.search(message))
+
+        # Map directions to X/Z offsets (Outward uses Z = north/south, X = east/west)
+        offsets = {
+            "north":    (0,  _MOVE_STEP),
+            "south":    (0, -_MOVE_STEP),
+            "east":     ( _MOVE_STEP, 0),
+            "west":     (-_MOVE_STEP, 0),
+            "forward":  (0,  _MOVE_STEP),
+            "backward": (0, -_MOVE_STEP),
+            "back":     (0, -_MOVE_STEP),
+            "left":     (-_MOVE_STEP, 0),
+            "right":    ( _MOVE_STEP, 0),
+        }
+        dx, dz = offsets.get(direction, (0, _MOVE_STEP))
+        tx, tz = px + dx, pz + dz
+
+        await self._game.navigate_to(tx, py, tz, run=run)
+        verb = "Running" if run else "Moving"
+        await self._game.say(f"{verb} {direction}.")
+        logger.info(f"[Nav] Player-commanded move {direction}: ({px:.1f},{pz:.1f}) → ({tx:.1f},{tz:.1f})")
         return True
 
     # Only hard-filter pure engine internals — never physical world objects

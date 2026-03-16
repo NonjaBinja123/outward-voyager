@@ -5,12 +5,12 @@ websocket:
   port: 9999
 
 llm:
-  # Priority order — first available wins each cycle
+  # Priority order — cloud providers rotate round-robin, ollama is always fallback
   priority:
-    - ollama
     - claude
-    - openai
     - gemini
+    - openai
+    - ollama
 
   providers:
     ollama:
@@ -19,16 +19,22 @@ llm:
       enabled: true
 
     claude:
-      model: claude-opus-4-6
-      enabled: false  # set to true and add ANTHROPIC_API_KEY env var
+      model: claude-sonnet-4-6
+      enabled: true  # auto-skipped if ANTHROPIC_API_KEY not set
 
     openai:
       model: gpt-4o
-      enabled: false  # set to true and add OPENAI_API_KEY env var
+      enabled: true  # auto-skipped if OPENAI_API_KEY not set
 
     gemini:
       model: gemini-2.0-flash
-      enabled: false  # set to true and add GOOGLE_API_KEY env var
+      enabled: true  # auto-skipped if GOOGLE_API_KEY not set
+
+  # Optional: route specific task types to specific providers
+  # task_routing:
+  #   chat: gemini       # fast + cheap for player chat
+  #   strategy: claude   # best reasoning for decisions
+  #   code: claude       # best for code generation
 
 agent:
   # How often the strategy loop fires (seconds)

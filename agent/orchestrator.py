@@ -275,7 +275,7 @@ class Orchestrator:
                 f"Current state:\n{state_summary}\n\n"
                 f"{player} says: {message}"
             )
-            reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt)
+            reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt, task="chat")
             if reply:
                 # Strip any quotes the LLM might wrap around its response
                 reply = reply.strip().strip('"').strip("'")
@@ -495,6 +495,7 @@ class Orchestrator:
         reply = await self._llm.complete(
             "You are an AI agent. Translate a list of game object names into a plain factual sentence about what is nearby. Be direct.",
             prompt,
+            task="chat",
         )
         if reply:
             reply = reply.strip().strip('"').strip("'")
@@ -519,10 +520,14 @@ class Orchestrator:
     # ── Strategy loop ────────────────────────────────────────────────────────
 
     async def _strategy_loop(self) -> None:
+        cycle = 0
         while True:
             await asyncio.sleep(self._strategy_interval)
             try:
                 await self._run_strategy()
+                cycle += 1
+                if cycle % 10 == 0:  # Save LLM usage every ~5 minutes
+                    self._llm.save_usage()
             except Exception as e:
                 logger.error(f"Strategy loop error: {e}")
 
@@ -542,7 +547,7 @@ Personality: {personality}
 Combat experience: {combat_exp}
 Pending player messages: {self._pending_chat}"""
 
-        response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg)
+        response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg, task="strategy")
         if not response_text:
             return
 
@@ -726,7 +731,7 @@ Pending player messages: {self._pending_chat}"""
             "and return a dict with keys: action (str), params (dict).\n"
             "Respond with ONLY the Python code — no markdown, no explanations."
         )
-        code = await self._llm.complete("You write safe Python code.", PROPOSE_PROMPT)
+        code = await self._llm.complete("You write safe Python code.", PROPOSE_PROMPT, task="code")
         if not code:
             return
 

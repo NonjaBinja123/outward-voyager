@@ -456,9 +456,15 @@ class Orchestrator:
         "cube", "plane", "sphere", "cylinder", "quad",
     )
 
+    @staticmethod
+    def _base_name(name: str) -> str:
+        """Strip instance suffixes like ' (1)', ' (2)' to deduplicate."""
+        return re.sub(r"\s*\(\d+\)$", "", name)
+
     def _filter_objects(self, objects: list[dict]) -> list[dict]:
-        """Keep physical world objects; strip only pure engine internals."""
+        """Keep physical world objects; strip engine internals and deduplicate."""
         result = []
+        seen_bases: set[str] = set()
         for obj in objects:
             if not obj.get("active"):
                 continue
@@ -470,6 +476,11 @@ class Orchestrator:
             # Drop pure engine internals
             if any(n in name_lower for n in self._ENGINE_NOISE):
                 continue
+            # Deduplicate — keep first instance of each base name (closest)
+            base = self._base_name(obj.get("name", "")).lower()
+            if base in seen_bases:
+                continue
+            seen_bases.add(base)
             # Keep anything with a physical presence (collider = exists in world)
             if obj.get("has_collider"):
                 result.append(obj)

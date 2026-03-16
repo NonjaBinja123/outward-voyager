@@ -278,6 +278,23 @@ class Orchestrator:
         self._pending_chat.append(msg)
         await self._respond_to_chat(message, player)
 
+    def _recent_chat_context(self, limit: int = 6) -> str:
+        """Read the last few chat entries for conversational context."""
+        try:
+            if not self._chat_log_path.exists():
+                return ""
+            lines = self._chat_log_path.read_text(encoding="utf-8").strip().splitlines()
+            recent = []
+            for line in lines[-limit:]:
+                entry = json.loads(line)
+                role = entry.get("role", "?")
+                msg = entry.get("message", "")
+                name = entry.get("name", role)
+                recent.append(f"{name}: {msg}")
+            return "\n".join(recent)
+        except Exception:
+            return ""
+
     async def _respond_to_chat(self, message: str, player: str) -> None:
         """Send player message to LLM and reply in chat right away."""
         try:
@@ -291,9 +308,11 @@ class Orchestrator:
                 f"Position: ({p.get('pos_x', '?'):.1f}, {p.get('pos_z', '?'):.1f})  "
                 f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
             ) if p else f"Scene: {scene}\n(No player state available)"
+            chat_history = self._recent_chat_context()
             prompt = (
                 f"Current state:\n{state_summary}\n\n"
-                f"{player} says: {message}"
+                + (f"Recent conversation:\n{chat_history}\n\n" if chat_history else "")
+                + f"{player} says: {message}"
             )
             reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt, task="chat")
             if reply:

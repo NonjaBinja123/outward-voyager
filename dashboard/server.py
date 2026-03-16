@@ -126,17 +126,27 @@ def get_goals() -> JSONResponse:
 
 
 BEPINEX_LOG = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Outward\Outward_Defed\BepInEx\LogOutput.log")
+AGENT_LOG = DATA_DIR.parent / "logs" / "voyager.log"
+
+
+def _tail_file(path: Path, n: int = 200) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        return lines[-n:]
+    except Exception:
+        return []
 
 
 @app.get("/api/log")
 def get_log() -> JSONResponse:
-    if not BEPINEX_LOG.exists():
-        return JSONResponse([])
-    try:
-        lines = BEPINEX_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-        return JSONResponse(lines[-200:])  # last 200 lines
-    except Exception as e:
-        return JSONResponse({"error": str(e)})
+    return JSONResponse(_tail_file(BEPINEX_LOG, 200))
+
+
+@app.get("/api/agent_log")
+def get_agent_log() -> JSONResponse:
+    return JSONResponse(_tail_file(AGENT_LOG, 200))
 
 
 @app.get("/api/chat")
@@ -372,6 +382,10 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     <div id="llm-body" style="font-size:0.82rem">
       <span style="color:#8b949e">No usage data yet</span>
     </div>
+  </div>
+  <div class="card" id="card-agentlog">
+    <h2>Agent Log</h2>
+    <div id="agentlog-body" style="height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem;background:#0d1117;border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-all"><span style="color:#444">Waiting for agent log...</span></div>
   </div>
   <div class="card" id="card-prefs">
     <h2>Preferences</h2>
@@ -711,6 +725,28 @@ async function sendChat() {
   setTimeout(refreshChat, 500);
 }
 
+let _lastAgentLogCount = 0;
+async function refreshAgentLog() {
+  let lines;
+  try {
+    const r = await fetch('/api/agent_log');
+    lines = await r.json();
+  } catch(e) { return; }
+  if (!Array.isArray(lines) || lines.length === _lastAgentLogCount) return;
+  _lastAgentLogCount = lines.length;
+  const el = document.getElementById('agentlog-body');
+  const atBottom = el.scrollHeight - el.scrollTop <= el.clientHeight + 40;
+  el.innerHTML = lines.map(l => {
+    let color = '#c9d1d9';
+    if (l.includes('[WARNING]')) color = '#e3b341';
+    else if (l.includes('[ERROR]')) color = '#f85149';
+    else if (l.includes('LLM')) color = '#bc8cff';
+    else if (l.includes('[Nav]') || l.includes('[Chat]') || l.includes('[Scan]')) color = '#79c0ff';
+    return `<span style="color:${color}">${l.replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>`;
+  }).join('\\n');
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
 let _lastLogCount = 0;
 async function refreshLog() {
   let lines;
@@ -751,8 +787,9 @@ var _DEFAULT_LAYOUT = {
   'card-state':   {left:640,  top:20,   width:300, height:220},
   'card-llm':     {left:960,  top:20,   width:300, height:220},
   'card-stream':  {left:640,  top:260,  width:600, height:380},
-  'card-diag':    {left:1280, top:20,   width:340, height:260},
-  'card-log':     {left:1280, top:300,  width:340, height:340},
+  'card-diag':    {left:1280, top:20,   width:340, height:220},
+  'card-log':     {left:1280, top:260,  width:340, height:280},
+  'card-agentlog':{left:1280, top:560,  width:340, height:280},
   'card-prefs':   {left:20,   top:380,  width:440, height:280},
   'card-combat':  {left:480,  top:380,  width:440, height:280},
   'card-map':     {left:940,  top:660,  width:440, height:280},
@@ -813,8 +850,8 @@ function initLayout() {
 async function refreshAll() {
   document.getElementById('last-refresh').textContent = 'Refreshing...';
   await Promise.all([
-    refreshDiag(), refreshChat(), refreshLog(), refreshPrefs(), refreshCombat(), refreshMap(),
-    refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
+    refreshDiag(), refreshChat(), refreshLog(), refreshAgentLog(), refreshPrefs(), refreshCombat(),
+    refreshMap(), refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
     refreshGameState(), refreshLLMUsage()
   ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
@@ -827,7 +864,8 @@ async function refreshAll() {
 initLayout();
 refreshAll();
 setInterval(refreshAll, 10000);
-setInterval(refreshLog, 2000);   // live log updates
+setInterval(refreshLog, 2000);       // live BepInEx log
+setInterval(refreshAgentLog, 3000);  // live agent log
 setInterval(refreshChat, 3000);  // fast chat updates
 setInterval(refreshGameState, 5000);  // game state every 5s
 </script>

@@ -10,6 +10,7 @@ checking preconditions and verifying results.
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 from pathlib import Path
@@ -153,6 +154,7 @@ class Orchestrator:
         self._game.on("chat", self._on_chat)
         self._game.on("ack", self._on_ack)
         self._game.on("nav_arrived", self._on_nav_arrived)
+        self._game.on("nav_failed", self._on_nav_failed)
         self._game.on("nav_update", self._on_nav_update)
         self._game.on("scan_result", self._on_scan_result)
 
@@ -408,19 +410,31 @@ class Orchestrator:
         direction = m.group(1).lower() if m else "forward"
         run = bool(_RUN_RE.search(message))
 
-        # Map directions to X/Z offsets (Outward uses Z = north/south, X = east/west)
-        offsets = {
-            "north":    (0,  _MOVE_STEP),
-            "south":    (0, -_MOVE_STEP),
-            "east":     ( _MOVE_STEP, 0),
-            "west":     (-_MOVE_STEP, 0),
-            "forward":  (0,  _MOVE_STEP),
-            "backward": (0, -_MOVE_STEP),
-            "back":     (0, -_MOVE_STEP),
-            "left":     (-_MOVE_STEP, 0),
-            "right":    ( _MOVE_STEP, 0),
+        # Cardinal directions use fixed world axes
+        # Relative directions (forward/back/left/right) use character facing
+        cardinal_offsets = {
+            "north": (0, _MOVE_STEP),
+            "south": (0, -_MOVE_STEP),
+            "east":  (_MOVE_STEP, 0),
+            "west":  (-_MOVE_STEP, 0),
         }
-        dx, dz = offsets.get(direction, (0, _MOVE_STEP))
+        if direction in cardinal_offsets:
+            dx, dz = cardinal_offsets[direction]
+        else:
+            # Relative to character facing — rotation_y is euler Y in degrees
+            rot_y = float(player.get("rotation_y", 0))
+            rad = math.radians(rot_y)
+            # Unity: Y rotation 0 = +Z (north), 90 = +X (east)
+            fwd_x, fwd_z = math.sin(rad), math.cos(rad)
+            right_x, right_z = math.cos(rad), -math.sin(rad)
+            relative_offsets = {
+                "forward":  (fwd_x * _MOVE_STEP, fwd_z * _MOVE_STEP),
+                "backward": (-fwd_x * _MOVE_STEP, -fwd_z * _MOVE_STEP),
+                "back":     (-fwd_x * _MOVE_STEP, -fwd_z * _MOVE_STEP),
+                "left":     (-right_x * _MOVE_STEP, -right_z * _MOVE_STEP),
+                "right":    (right_x * _MOVE_STEP, right_z * _MOVE_STEP),
+            }
+            dx, dz = relative_offsets.get(direction, (fwd_x * _MOVE_STEP, fwd_z * _MOVE_STEP))
         tx, tz = px + dx, pz + dz
 
         await self._game.navigate_to(tx, py, tz, run=run)
@@ -522,6 +536,15 @@ class Orchestrator:
 
     async def _on_nav_arrived(self, msg: dict) -> None:
         logger.info("[Nav] Arrived at destination.")
+        await self._game.say("I've arrived.")
+        self._log_chat("voyager", "I've arrived.")
+
+    async def _on_nav_failed(self, msg: dict) -> None:
+        reason = msg.get("reason", "unknown")
+        logger.warning(f"[Nav] Navigation failed: {reason}")
+        reply = f"Can't go that way — {reason}."
+        await self._game.say(reply)
+        self._log_chat("voyager", reply)
 
     async def _on_nav_update(self, msg: dict) -> None:
         dist = msg.get("distance", 0)

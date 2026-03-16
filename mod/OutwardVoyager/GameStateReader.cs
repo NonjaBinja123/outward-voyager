@@ -47,6 +47,7 @@ public class GameStateReader
             if (character == null) return new PlayerState();
 
             var pos = character.transform.position;
+            var rot = character.transform.eulerAngles;
             var stats = character.Stats;
 
             float health = 0, maxHealth = 0, stamina = 0, maxStamina = 0, mana = 0, maxMana = 0;
@@ -72,6 +73,7 @@ public class GameStateReader
                 PositionX = pos.x,
                 PositionY = pos.y,
                 PositionZ = pos.z,
+                RotationY = rot.y,
                 IsDead = character.IsDead,
                 IsInCombat = character.InCombat,
             };
@@ -193,6 +195,7 @@ public class PlayerState
     [JsonPropertyName("pos_x")] public float PositionX { get; init; }
     [JsonPropertyName("pos_y")] public float PositionY { get; init; }
     [JsonPropertyName("pos_z")] public float PositionZ { get; init; }
+    [JsonPropertyName("rotation_y")] public float RotationY { get; init; }
     [JsonPropertyName("is_dead")] public bool IsDead { get; init; }
     [JsonPropertyName("in_combat")] public bool IsInCombat { get; init; }
 }

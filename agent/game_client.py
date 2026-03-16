@@ -26,7 +26,9 @@ class GameClient:
     async def connect(self) -> None:
         while True:
             try:
-                self._ws = await websockets.connect(self._uri)
+                self._ws = await websockets.connect(
+                    self._uri, ping_interval=None, ping_timeout=None
+                )
                 self._connected.set()
                 logger.info(f"Connected to game mod at {self._uri}")
                 await self._receive_loop()

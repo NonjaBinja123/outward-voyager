@@ -21,7 +21,7 @@ public class NavigationController : MonoBehaviour
 
     private const float ArrivalDistance = 2.5f;
     private const float NavUpdateInterval = 3.0f;
-    private const float StuckTimeLimit = 0.5f;
+    private const float StuckTimeLimit = 2.0f;
     private const float StuckMoveThreshold = 0.1f; // units/sec below this = stuck
 
     private float _lastUpdateTime;

@@ -14,7 +14,7 @@ public class WebSocketServer
     private readonly HttpListener _listener;
     private WebSocket? _client;
     private CancellationTokenSource _cts = new();
-    private readonly object _sendLock = new();
+    private readonly SemaphoreSlim _sendLock = new(1, 1);
 
     public event Action<string>? OnMessageReceived;
 
@@ -87,17 +87,24 @@ public class WebSocketServer
     /// <summary>Send a JSON-serializable object to the connected agent.</summary>
     public async Task SendAsync(object payload)
     {
-        if (_client is null || _client.State != WebSocketState.Open)
+        var ws = _client;
+        if (ws is null || ws.State != WebSocketState.Open)
             return;
         var json = JsonSerializer.Serialize(payload);
         var bytes = Encoding.UTF8.GetBytes(json);
+        await _sendLock.WaitAsync(_cts.Token).ConfigureAwait(false);
         try
         {
-            await _client.SendAsync(bytes, WebSocketMessageType.Text, true, _cts.Token).ConfigureAwait(false);
+            if (ws.State == WebSocketState.Open)
+                await ws.SendAsync(bytes, WebSocketMessageType.Text, true, _cts.Token).ConfigureAwait(false);
         }
         catch (Exception ex)
         {
             Plugin.Log.LogWarning($"Send error: {ex.Message}");
+        }
+        finally
+        {
+            _sendLock.Release();
         }
     }
 

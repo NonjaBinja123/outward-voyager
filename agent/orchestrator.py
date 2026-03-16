@@ -420,6 +420,8 @@ class Orchestrator:
         "defeatspawn", "spawnpoint", "spawnpos", "position1", "position2",
         "lod_", "_lod", "pfx_", "vfx_", "_pfx", "_vfx", "particlesystem",
         "terrain_chunk", "occluder", "navmesh", "windzone",
+        "boxcollider", "colliderholder", "meshcollider", "capsulecollider",
+        "cube", "plane", "sphere", "cylinder", "quad",
     )
 
     def _filter_objects(self, objects: list[dict]) -> list[dict]:

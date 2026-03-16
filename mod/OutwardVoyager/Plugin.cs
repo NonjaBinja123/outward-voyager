@@ -42,6 +42,10 @@ public class Plugin : BasePlugin
         // ChatHook patches ChatManager to relay player messages to agent
         ChatHook.Apply();
 
+        // InputInjector patches ControlsInput so agent movement goes through
+        // Outward's own pipeline (animations, physics, collision)
+        InputInjector.Apply();
+
         Log.LogInfo($"{MyPluginInfo.PLUGIN_NAME} loaded. WebSocket listening on ws://localhost:9999/");
     }
 

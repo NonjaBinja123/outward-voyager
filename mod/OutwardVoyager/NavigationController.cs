@@ -3,25 +3,27 @@ using UnityEngine;
 namespace OutwardVoyager;
 
 /// <summary>
-/// Drives the player character toward a navigation target each frame via
-/// CharacterController.SimpleMove. Player input is NOT disabled — LocalCharacterControl
-/// remains active so chat and all other input continues to work.
+/// Drives the player character toward a navigation target by:
+///   1. Rotating the character to face the target each frame.
+///   2. Injecting MoveVertical=1 via InputInjector so Outward's own pipeline
+///      handles movement — animations, physics, and collision all work normally.
 ///
-/// Known limitation: walk animation does not play because we are moving through
-/// CharacterController directly rather than through Outward's input pipeline.
-/// Character is rotated to face the movement direction so it does not slide backwards.
+/// Stuck detection: if the character's position hasn't changed for 0.5s while
+/// navigating, assumes a wall or obstacle and cancels.
 /// </summary>
 public class NavigationController : MonoBehaviour
 {
     private Vector3? _target;
     private bool _run;
-    private bool _componentsResolved;
-    private CharacterController? _cc;
 
-    private const float WalkSpeed = 3.0f;
-    private const float RunSpeed  = 5.5f;
-    private const float ArrivalDistance  = 2.5f;
+    private Vector3 _lastPos;
+    private float _stuckTime;
+
+    private const float ArrivalDistance = 2.5f;
     private const float NavUpdateInterval = 3.0f;
+    private const float StuckTimeLimit = 0.5f;
+    private const float StuckMoveThreshold = 0.1f; // units/sec below this = stuck
+
     private float _lastUpdateTime;
 
     public bool IsNavigating => _target.HasValue;
@@ -30,7 +32,12 @@ public class NavigationController : MonoBehaviour
     {
         _target = target;
         _run = run;
-        _componentsResolved = false;
+        _stuckTime = 0f;
+
+        var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+        _lastPos = character?.transform.position ?? Vector3.zero;
+
+        InputInjector.IsNavigating = true;
         Plugin.Log.LogInfo($"[Nav] Target set: ({target.x:F1},{target.y:F1},{target.z:F1}) run={run}");
     }
 
@@ -38,8 +45,8 @@ public class NavigationController : MonoBehaviour
     {
         if (!_target.HasValue) return;
         _target = null;
-        _cc = null;
-        _componentsResolved = false;
+        _stuckTime = 0f;
+        InputInjector.IsNavigating = false;
         Plugin.Log.LogInfo("[Nav] Navigation cancelled.");
     }
 
@@ -50,50 +57,51 @@ public class NavigationController : MonoBehaviour
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         if (character == null) return;
 
-        // Resolve CharacterController lazily — character guaranteed loaded here
-        if (!_componentsResolved)
-        {
-            _cc = character.GetComponent<CharacterController>();
-            _componentsResolved = true;
-            Plugin.Log.LogInfo($"[Nav] CharacterController found: {_cc != null}");
-
-            if (_cc == null)
-            {
-                Plugin.Log.LogWarning("[Nav] No CharacterController on player — cannot move. Cancelling.");
-                _target = null;
-                _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "no_movement_api" });
-                return;
-            }
-        }
-
-        if (_cc == null) return;
-
         var pos = character.transform.position;
         var toTarget = _target.Value - pos;
         toTarget.y = 0f;
         float dist = toTarget.magnitude;
 
+        // Arrived?
         if (dist <= ArrivalDistance)
         {
             Plugin.Log.LogInfo("[Nav] Arrived at target.");
             _target = null;
-            _cc = null;
-            _componentsResolved = false;
+            _stuckTime = 0f;
+            InputInjector.IsNavigating = false;
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_arrived" });
             return;
         }
 
-        var dir = toTarget.normalized;
+        // Stuck detection — wall or impassable obstacle
+        float moved = Vector3.Distance(pos, _lastPos) / Time.deltaTime;
+        if (moved < StuckMoveThreshold)
+        {
+            _stuckTime += Time.deltaTime;
+            if (_stuckTime >= StuckTimeLimit)
+            {
+                Plugin.Log.LogInfo("[Nav] Stuck — obstacle detected. Cancelling.");
+                _target = null;
+                _stuckTime = 0f;
+                InputInjector.IsNavigating = false;
+                _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "stuck" });
+                return;
+            }
+        }
+        else
+        {
+            _stuckTime = 0f;
+        }
+        _lastPos = pos;
 
-        // Rotate character to face direction of movement so it doesn't slide backwards
+        // Rotate to face target — InputInjector injects MoveVertical=1 (forward)
+        // so Outward drives the character toward wherever it's facing
+        var dir = toTarget.normalized;
         character.transform.rotation = Quaternion.RotateTowards(
             character.transform.rotation,
             Quaternion.LookRotation(dir),
-            360f * Time.deltaTime
+            720f * Time.deltaTime  // fast rotation so character snaps to direction quickly
         );
-
-        float speed = _run ? RunSpeed : WalkSpeed;
-        _cc.SimpleMove(dir * speed);
 
         if (Time.time - _lastUpdateTime >= NavUpdateInterval)
         {

@@ -11,11 +11,13 @@ import asyncio
 import json
 import logging
 import math
+import random
 import re
 import time
 from pathlib import Path
 from typing import Any
 
+from auto_loader import VisionAutoLoader
 from game_client import GameClient
 from llm_router import LLMRouter
 from memory.goals import Goal, GoalSystem
@@ -108,6 +110,7 @@ Respond with ONLY a JSON object (no markdown, no extra text):
 {
   "intent": "<action tag>",
   "reasoning": "<one sentence>",
+  "direction": "<optional: north/south/east/west or null>",
   "chat": null
 }
 Be specific — use the actual game state data provided. Do not rest or wait unless
@@ -143,13 +146,16 @@ class Orchestrator:
         self._rule_interval: float = config["agent"]["rule_interval"]
         self._last_skill_proposal: dict[str, float] = {}  # intent → timestamp
 
+        self._loader_task: asyncio.Task | None = None
         self._chat_log_path = Path("./data/chat_log.jsonl")
         self._pending_dashboard_path = Path("./data/pending_dashboard_chat.json")
         self._game_state_path = Path("./data/game_state.json")
         self._scan_for_player: bool = False  # True only when player explicitly asked to look
+        self._nearby_objects: list[dict] = []  # Last scan results (filtered)
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Wire up game event handlers
+        self._game.on("connected", self._on_connected)
         self._game.on("game_state", self._on_game_state)
         self._game.on("chat", self._on_chat)
         self._game.on("ack", self._on_ack)
@@ -167,6 +173,16 @@ class Orchestrator:
         )
 
     # ── Event handlers ──────────────────────────────────────────────────────
+
+    async def _on_connected(self, _msg: dict) -> None:
+        """Sync autonomous mode flag and kick off vision-guided menu loading."""
+        await self._game.set_autonomous(self._autonomous_movement)
+        logger.info(f"Synced autonomous_movement={self._autonomous_movement} to mod")
+        # Cancel any previous loader task (stale from a prior connect)
+        if self._loader_task and not self._loader_task.done():
+            self._loader_task.cancel()
+        loader = VisionAutoLoader(self._game, self._config)
+        self._loader_task = asyncio.create_task(loader.run())
 
     async def _on_game_state(self, msg: dict) -> None:
         prev_state = self._current_state
@@ -440,8 +456,8 @@ class Orchestrator:
         if direction in cardinal_offsets:
             dx, dz = cardinal_offsets[direction]
         else:
-            # Relative to character facing — rotation_y is euler Y in degrees
-            rot_y = float(player.get("rotation_y", 0))
+            # Relative to camera facing — camera_rotation_y is euler Y in degrees
+            rot_y = float(player.get("camera_rotation_y", player.get("rotation_y", 0)))
             rad = math.radians(rot_y)
             # Unity: Y rotation 0 = +Z (north), 90 = +X (east)
             fwd_x, fwd_z = math.sin(rad), math.cos(rad)
@@ -517,11 +533,12 @@ class Orchestrator:
                 f"tag={obj.get('tag')} char={obj.get('has_character')} dead={obj.get('is_dead')}"
             )
 
+        meaningful = self._filter_objects(objects)
+        self._nearby_objects = meaningful  # cache for autonomous decisions
+
         if not self._scan_for_player:
             return  # background scan — don't clutter chat
         self._scan_for_player = False
-
-        meaningful = self._filter_objects(objects)
 
         if not meaningful:
             await self._game.say("I don't see anything of note nearby.")
@@ -557,7 +574,7 @@ class Orchestrator:
         reply = await self._llm.complete(
             "You are an AI agent. Translate a list of game object names into a plain factual sentence about what is nearby. Be direct.",
             prompt,
-            task="chat",
+            task="scan",
         )
         if reply:
             reply = reply.strip().strip('"').strip("'")
@@ -597,6 +614,8 @@ class Orchestrator:
             try:
                 await self._run_strategy()
                 cycle += 1
+                if cycle % 3 == 0:  # Background scan every ~90s
+                    await self._game.scan_nearby(radius=40.0)
                 if cycle % 10 == 0:  # Save LLM usage every ~5 minutes
                     self._llm.save_usage()
             except Exception as e:
@@ -626,8 +645,22 @@ class Orchestrator:
             f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"
             f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
         )
+        # Compact nearby objects summary
+        nearby_summary = ""
+        if self._nearby_objects:
+            items = []
+            for o in self._nearby_objects[:8]:
+                label = o.get("name", "?")
+                dist = o.get("distance", "?")
+                if o.get("has_character"):
+                    state = "dead" if o.get("is_dead") else "alive"
+                    items.append(f"{label} ({dist}m, {state})")
+                else:
+                    items.append(f"{label} ({dist}m)")
+            nearby_summary = f"\nNearby objects: {', '.join(items)}"
+
         user_msg = f"""Current state:
-{state_summary}
+{state_summary}{nearby_summary}
 
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
@@ -640,7 +673,6 @@ Pending player messages: {self._pending_chat}"""
         if not response_text:
             return
 
-        import json
         try:
             decision = json.loads(response_text)
         except Exception:
@@ -656,8 +688,13 @@ Pending player messages: {self._pending_chat}"""
         # Queue skills for the rule engine
         self._current_skill_queue = self._composer.compose(intent, self._current_state)
 
-        # If no skills found, try to generate one via the sandbox
-        await self._maybe_propose_new_skill(intent, reasoning)
+        # If no skills queued, handle common intents directly
+        if not self._current_skill_queue:
+            await self._execute_intent(intent, decision)
+
+        # If still no skills, try to generate one via the sandbox
+        if not self._current_skill_queue:
+            await self._maybe_propose_new_skill(intent, reasoning)
 
         # Respond in chat if addressed
         if chat_msg and self._pending_chat:
@@ -670,6 +707,66 @@ Pending player messages: {self._pending_chat}"""
             scene=self._current_state.get("scene", "unknown"),
             tags=[intent],
         ))
+
+    # ── Intent execution (when no skills match) ─────────────────────────
+
+    async def _execute_intent(self, intent: str, decision: dict) -> None:
+        """Directly execute common intents that don't need skill DB entries."""
+        player = self._current_state.get("player", {})
+        px = float(player.get("pos_x", 0))
+        py = float(player.get("pos_y", 0))
+        pz = float(player.get("pos_z", 0))
+
+        if px == 0.0 and py == 0.0 and pz == 0.0:
+            return  # no valid position yet
+
+        if intent == "explore":
+            await self._auto_explore(px, py, pz, decision.get("direction"))
+        elif intent == "investigate":
+            # If we have cached scan results with characters/items, walk to the closest
+            interesting = [o for o in self._nearby_objects
+                           if o.get("has_character") or o.get("has_item")]
+            if interesting:
+                target = interesting[0]
+                tx = float(target.get("x", px))
+                tz = float(target.get("z", pz))
+                await self._game.navigate_to(tx, py, tz, run=False)
+                logger.info(f"[Nav] Investigating {target.get('name')} at ({tx:.1f}, {tz:.1f})")
+            else:
+                # No cached results — scan first
+                await self._game.scan_nearby(radius=40.0)
+        elif intent == "flee":
+            # Run in a random direction away from danger
+            angle = random.uniform(0, 2 * math.pi)
+            tx = px + math.sin(angle) * 30.0
+            tz = pz + math.cos(angle) * 30.0
+            await self._game.navigate_to(tx, py, tz, run=True)
+            logger.info(f"[Nav] Fleeing to ({tx:.1f}, {tz:.1f})")
+
+    _CARDINAL_ANGLES = {
+        "north": 0.0, "northeast": math.pi / 4, "east": math.pi / 2,
+        "southeast": 3 * math.pi / 4, "south": math.pi,
+        "southwest": 5 * math.pi / 4, "west": 3 * math.pi / 2,
+        "northwest": 7 * math.pi / 4,
+    }
+
+    async def _auto_explore(self, px: float, py: float, pz: float,
+                            direction: str | None = None) -> None:
+        """Pick an exploration target and walk there."""
+        dist = random.uniform(15.0, 40.0)
+
+        if direction and direction.lower() in self._CARDINAL_ANGLES:
+            # LLM suggested a direction — use it with slight randomness
+            base_angle = self._CARDINAL_ANGLES[direction.lower()]
+            angle = base_angle + random.uniform(-0.3, 0.3)
+        else:
+            angle = random.uniform(0, 2 * math.pi)
+
+        tx = px + math.sin(angle) * dist
+        tz = pz + math.cos(angle) * dist
+        await self._game.navigate_to(tx, py, tz, run=False)
+        dir_label = direction or "random"
+        logger.info(f"[Nav] Auto-exploring {dir_label} toward ({tx:.1f}, {tz:.1f})")
 
     # ── Rule engine ──────────────────────────────────────────────────────────
 

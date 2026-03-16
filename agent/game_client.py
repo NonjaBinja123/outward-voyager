@@ -31,6 +31,8 @@ class GameClient:
                 )
                 self._connected.set()
                 logger.info(f"Connected to game mod at {self._uri}")
+                for handler in self._handlers.get("connected", []):
+                    await handler({})
                 await self._receive_loop()
             except Exception as e:
                 self._connected.clear()
@@ -79,3 +81,6 @@ class GameClient:
 
     async def take_item(self, name: str = "", item_id: str = "") -> None:
         await self.send("take_item", {"name": name, "id": item_id})
+
+    async def set_autonomous(self, enabled: bool) -> None:
+        await self.send("set_autonomous", {"enabled": enabled})

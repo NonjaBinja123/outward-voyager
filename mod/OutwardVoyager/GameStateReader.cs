@@ -50,6 +50,12 @@ public class GameStateReader
             var rot = character.transform.eulerAngles;
             var stats = character.Stats;
 
+            // Camera rotation for camera-relative movement
+            float cameraRotY = 0f;
+            var cam = Camera.main;
+            if (cam != null)
+                cameraRotY = cam.transform.eulerAngles.y;
+
             float health = 0, maxHealth = 0, stamina = 0, maxStamina = 0, mana = 0, maxMana = 0;
 
             if (stats != null)
@@ -74,6 +80,7 @@ public class GameStateReader
                 PositionY = pos.y,
                 PositionZ = pos.z,
                 RotationY = rot.y,
+                CameraRotationY = cameraRotY,
                 IsDead = character.IsDead,
                 IsInCombat = character.InCombat,
             };
@@ -196,6 +203,7 @@ public class PlayerState
     [JsonPropertyName("pos_y")] public float PositionY { get; init; }
     [JsonPropertyName("pos_z")] public float PositionZ { get; init; }
     [JsonPropertyName("rotation_y")] public float RotationY { get; init; }
+    [JsonPropertyName("camera_rotation_y")] public float CameraRotationY { get; init; }
     [JsonPropertyName("is_dead")] public bool IsDead { get; init; }
     [JsonPropertyName("in_combat")] public bool IsInCombat { get; init; }
 }

@@ -19,19 +19,44 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Environment variable names for each provider's API key
+# Maps provider config name → API key env var + backend type
+# Multiple config entries can share the same key (e.g., claude/claude_haiku/claude_opus)
 _API_KEY_VARS: dict[str, str] = {
-    "claude": "ANTHROPIC_API_KEY",
-    "openai": "OPENAI_API_KEY",
-    "gemini": "GOOGLE_API_KEY",
+    "claude":       "ANTHROPIC_API_KEY",
+    "claude_haiku": "ANTHROPIC_API_KEY",
+    "claude_opus":  "ANTHROPIC_API_KEY",
+    "openai":       "OPENAI_API_KEY",
+    "openai_full":  "OPENAI_API_KEY",
+    "gemini":       "GOOGLE_API_KEY",
+    "gemini_lite":  "GOOGLE_API_KEY",
+    "gemini_pro":   "GOOGLE_API_KEY",
 }
 
-# Approximate cost per 1K tokens (input, output) in USD — for tracking only
+# Maps config name → which backend implementation to use
+_BACKEND: dict[str, str] = {
+    "claude":       "claude",
+    "claude_haiku": "claude",
+    "claude_opus":  "claude",
+    "openai":       "openai",
+    "openai_full":  "openai",
+    "gemini":       "gemini",
+    "gemini_lite":  "gemini",
+    "gemini_pro":   "gemini",
+    "ollama":       "ollama",
+}
+
+# Cost per 1K tokens (input, output) in USD — for tracking only
+# Sources: anthropic.com/pricing, openai.com/pricing, ai.google.dev/pricing (2026-03)
 _COST_PER_1K: dict[str, tuple[float, float]] = {
-    "ollama": (0.0, 0.0),
-    "claude": (0.015, 0.075),   # Claude Sonnet 4.6
-    "openai": (0.005, 0.015),   # GPT-4o
-    "gemini": (0.0005, 0.0015), # Gemini 2.0 Flash
+    "ollama":       (0.0,     0.0),      # Free — local inference
+    "claude_opus":  (0.005,   0.025),    # Opus 4.6: $5/$25 per MTok
+    "claude":       (0.003,   0.015),    # Sonnet 4.6: $3/$15 per MTok
+    "claude_haiku": (0.001,   0.005),    # Haiku 4.5: $1/$5 per MTok
+    "openai":       (0.00025, 0.0006),   # GPT-4o-mini: $0.15/$0.60 per MTok
+    "openai_full":  (0.0025,  0.010),    # GPT-4o: $2.50/$10 per MTok
+    "gemini":       (0.0003,  0.0025),   # Gemini 2.5 Flash: $0.30/$2.50 per MTok
+    "gemini_lite":  (0.0001,  0.0004),   # Gemini 2.5 Flash-Lite: $0.10/$0.40 per MTok
+    "gemini_pro":   (0.00125, 0.010),    # Gemini 2.5 Pro: $1.25/$10 per MTok
 }
 
 
@@ -79,27 +104,29 @@ class LLMRouter:
         self._usage_path = Path("./data/llm_usage.json")
         self._usage_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Build available provider list based on config + API keys
-        self._available: list[str] = []
-        for name in config.get("priority", ["ollama"]):
+        # Build set of available providers based on config + API key presence
+        self._available: set[str] = set()
+        for name, cfg in self._providers.items():
+            if not cfg.get("enabled", False):
+                continue
             if name == "ollama":
-                self._available.append(name)
-            elif self._providers.get(name, {}).get("enabled", False):
-                key_var = _API_KEY_VARS.get(name, "")
-                if key_var and os.environ.get(key_var):
-                    self._available.append(name)
-                else:
-                    logger.info(f"LLM provider {name} enabled but {key_var} not set — skipping")
+                self._available.add(name)
             else:
-                logger.debug(f"LLM provider {name} disabled in config")
+                key_var = _API_KEY_VARS.get(name, "")
+                key_val = os.environ.get(key_var, "") if key_var else ""
+                if key_val and len(key_val) > 20:  # reject obvious placeholders
+                    self._available.add(name)
+                else:
+                    logger.info(f"Provider '{name}' enabled but {key_var} not set — skipping")
 
-        # Round-robin index for rotation
-        self._rr_index = 0
+        # Task routing: task name → ordered list of providers to try
+        self._task_routing: dict[str, list[str]] = config.get("task_routing", {})
 
-        # Task-to-provider routing overrides (optional in config)
-        self._task_routing: dict[str, str] = config.get("task_routing", {})
+        # Round-robin index (per task) for providers at the same priority level
+        self._rr_index: dict[str, int] = {}
 
-        logger.info(f"LLM router initialized. Available providers: {self._available}")
+        available_sorted = sorted(self._available)
+        logger.info(f"LLM router initialized. Available: {available_sorted}")
         self._load_usage()
 
     def _get_stats(self, name: str) -> ProviderStats:
@@ -162,7 +189,7 @@ class LLMRouter:
         """Return usage stats for dashboard/logging."""
         summary: dict[str, Any] = {}
         for name, stats in self._stats.items():
-            cost_in, cost_out = _COST_PER_1K.get(name, (0, 0))
+            cost_in, cost_out = _COST_PER_1K.get(name, _COST_PER_1K.get(_BACKEND.get(name, ""), (0, 0)))
             est_cost = (
                 stats.total_input_tokens / 1000 * cost_in
                 + stats.total_output_tokens / 1000 * cost_out
@@ -191,36 +218,34 @@ class LLMRouter:
     def _select_providers(self, task: str) -> list[str]:
         """Return ordered list of providers to try for a given task.
 
-        If a task_routing override exists, try that provider first.
-        Otherwise use round-robin among cloud providers, with ollama as fallback.
+        Uses the task_routing config list in order, skipping unavailable providers.
+        Ollama is always appended last as the unconditional fallback.
         """
-        result: list[str] = []
+        ordered = self._task_routing.get(task, [])
+        if not ordered:
+            # No routing config for this task — use all available cloud providers
+            # in round-robin order, ollama last
+            cloud = sorted(p for p in self._available if p != "ollama")
+            rr = self._rr_index.get(task, 0)
+            if cloud:
+                cloud = cloud[rr:] + cloud[:rr]
+                self._rr_index[task] = (rr + 1) % len(cloud)
+            ordered = cloud
 
-        # Check for explicit task routing
-        preferred = self._task_routing.get(task)
-        if preferred and preferred in self._available:
-            result.append(preferred)
-
-        # Cloud providers in round-robin order (skip ollama for now)
-        cloud = [p for p in self._available if p != "ollama"]
-        if cloud:
-            for i in range(len(cloud)):
-                idx = (self._rr_index + i) % len(cloud)
-                name = cloud[idx]
-                if name not in result:
-                    result.append(name)
-            self._rr_index = (self._rr_index + 1) % len(cloud)
-
-        # Ollama always last as fallback
+        result = [p for p in ordered if p in self._available]
         if "ollama" in self._available and "ollama" not in result:
             result.append("ollama")
+
+        if not result:
+            result = ["ollama"] if "ollama" in self._available else []
 
         return result
 
     # ── Provider implementations ────────────────────────────────────────────
 
     async def _call(self, name: str, cfg: dict, system: str, user: str, max_tokens: int) -> str:
-        match name:
+        backend = _BACKEND.get(name, name)
+        match backend:
             case "ollama":
                 return await self._ollama(cfg, system, user, max_tokens)
             case "claude":
@@ -230,7 +255,7 @@ class LLMRouter:
             case "gemini":
                 return await self._gemini(cfg, system, user, max_tokens)
             case _:
-                raise ValueError(f"Unknown provider: {name}")
+                raise ValueError(f"Unknown backend '{backend}' for provider '{name}'")
 
     async def _ollama(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         import aiohttp
@@ -281,19 +306,24 @@ class LLMRouter:
         return resp.choices[0].message.content or ""
 
     async def _gemini(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types
         api_key = os.environ.get("GOOGLE_API_KEY", "")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            cfg.get("model", "gemini-2.0-flash"),
-            system_instruction=system,
-        )
+        client = genai.Client(api_key=api_key)
+        model_name = cfg.get("model", "gemini-2.5-flash")
         resp = await asyncio.to_thread(
-            model.generate_content,
-            user,
-            generation_config={"max_output_tokens": max_tokens},
+            client.models.generate_content,
+            model=model_name,
+            contents=user,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            ),
         )
-        return resp.text
+        text = resp.text
+        if not text:
+            raise ValueError("Gemini returned empty response")
+        return text
 
     # ── Persistence ─────────────────────────────────────────────────────────
 

@@ -5,50 +5,83 @@ websocket:
   port: 9999
 
 llm:
-  # Priority order — cloud providers rotate round-robin, ollama is always fallback
-  priority:
-    - claude
-    - gemini
-    - openai
-    - ollama
+  # ── Task routing ─────────────────────────────────────────────────────────
+  # Each task type tries providers in order — first available with a valid key wins.
+  # Fallback is always ollama (free, local, always available).
+  #
+  # chat:     Fast 1-2 sentence replies to the player. Cheap + fast is priority.
+  # strategy: JSON game decisions every 30s. Needs reliable instruction-following.
+  # code:     Python skill generation. Needs best accuracy. Called rarely.
+  # scan:     Translating game object names to English. Simple, high frequency.
+
+  task_routing:
+    chat:     [gemini, openai, claude_haiku, ollama]  # Cheap + fast
+    strategy: [claude, gemini_pro, openai_full, ollama]  # Best reasoning + JSON
+    code:     [claude_opus, claude, gemini_pro, openai_full, ollama]  # Highest quality
+    scan:     [gemini, openai, ollama]  # Simple translation, high volume
 
   providers:
+    # ── Local (always available, no API key) ─────────────────────────────
     ollama:
       base_url: http://localhost:11434
-      model: llama3.1:8b
+      model: llama3.1:8b         # Pull with: ollama pull llama3.1:8b
+      # Upgrade options (if you have VRAM):
+      # model: qwen3:14b          # Better reasoning — needs ~10GB VRAM
+      # model: llama3.1:70b       # Near-cloud quality — needs ~40GB VRAM
+      enabled: true
+
+    # ── Anthropic Claude ─────────────────────────────────────────────────
+    # API key: https://console.anthropic.com → Settings → API Keys
+    # Set env var: ANTHROPIC_API_KEY=sk-ant-...
+    claude_haiku:
+      model: claude-haiku-4-5    # $1/$5 per MTok — fastest Claude, good for chat
       enabled: true
 
     claude:
-      model: claude-sonnet-4-6
-      enabled: true  # auto-skipped if ANTHROPIC_API_KEY not set
+      model: claude-sonnet-4-6   # $3/$15 per MTok — best reasoning/cost balance
+      enabled: true
 
+    claude_opus:
+      model: claude-opus-4-6     # $5/$25 per MTok — most capable, code-only
+      enabled: true
+
+    # ── OpenAI ───────────────────────────────────────────────────────────
+    # NOTE: ChatGPT Plus/Pro subscription does NOT include API access.
+    # API is pay-as-you-go — set up billing at: https://platform.openai.com
+    # Add $10-20 of credits (will last weeks/months at this agent's usage).
+    # Set env var: OPENAI_API_KEY=sk-...
     openai:
-      model: gpt-4o
-      enabled: true  # auto-skipped if OPENAI_API_KEY not set
+      model: gpt-4o-mini         # $0.15/$0.60 per MTok — cheapest capable GPT
+      enabled: true
 
+    openai_full:
+      model: gpt-4o              # $2.50/$10 per MTok — full GPT-4o for strategy
+      enabled: true
+
+    # ── Google Gemini ─────────────────────────────────────────────────────
+    # NOTE: Google One AI Premium (phone plan) does NOT include API access.
+    # Get API key free at: https://aistudio.google.com → Get API Key
+    # Free tier: 15 req/min, 1500 req/day — enough for this agent!
+    # Set env var: GOOGLE_API_KEY=AIza...
     gemini:
-      model: gemini-2.0-flash
-      enabled: true  # auto-skipped if GOOGLE_API_KEY not set
+      model: gemini-2.5-flash    # $0.30/$2.50 per MTok — fast, smart, cheap
+      enabled: true
 
-  # Optional: route specific task types to specific providers
-  # task_routing:
-  #   chat: gemini       # fast + cheap for player chat
-  #   strategy: claude   # best reasoning for decisions
-  #   code: claude       # best for code generation
+    gemini_lite:
+      model: gemini-2.5-flash-lite  # $0.10/$0.40 per MTok — cheapest paid tier
+      enabled: false             # Enable if volume gets expensive
+
+    gemini_pro:
+      model: gemini-2.5-pro      # $1.25/$10 per MTok — best Gemini for reasoning
+      enabled: true
 
 agent:
-  # How often the strategy loop fires (seconds)
-  strategy_interval: 30
-  # How often the rule engine fires (seconds)
-  rule_interval: 2
-  # Max retries before escalating to Josh via chat
-  max_retries: 3
-  # Agent's name in chat
+  strategy_interval: 30     # How often the strategy loop fires (seconds)
+  rule_interval: 2           # How often the rule engine fires (seconds)
+  max_retries: 3             # Max retries before escalating to Josh via chat
   chat_name: Voyager
   # When false: player movement commands execute directly (dev/control mode)
-  # When true: movement suggestions go through the agent's decision layer —
-  # the agent weighs them against its own goals, health, and preferences,
-  # and may comply, refuse, or do something else entirely.
+  # When true: movement goes through agent's decision layer (autonomous mode)
   autonomous_movement: false
 
 memory:

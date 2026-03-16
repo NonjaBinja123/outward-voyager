@@ -4,10 +4,21 @@ echo  Outward Voyager — Full Launch
 echo ====================================================
 echo.
 
-REM ── Step 1: Close the game if running (DLL must not be locked during build)
+REM ── Step 1: Close the game gracefully, then wait for Steam to settle
 echo [1/5] Closing game if running...
+
+REM Try graceful close first (lets Steam process the disconnection cleanly)
+taskkill /im "Outward Definitive Edition.exe" 2>nul
+timeout /t 3 /nobreak >nul
+
+REM Force-kill anything still lingering
 taskkill /f /im "Outward Definitive Edition.exe" 2>nul
-timeout /t 2 /nobreak >nul
+
+REM Wait for Steam to fully process the session close.
+REM Root cause of first-load failure: SteamworksManager:InitAPI() fails if Steam
+REM hasn't finished disconnecting the previous session. 8s is enough.
+echo    Waiting for Steam to settle...
+timeout /t 8 /nobreak >nul
 
 REM ── Step 2: Clean + Build mod
 echo [2/5] Building mod (clean + build)...

@@ -3,13 +3,14 @@ using UnityEngine;
 namespace OutwardVoyager;
 
 /// <summary>
-/// Drives the player character toward a navigation target by:
-///   1. Rotating the character to face the target each frame.
-///   2. Injecting MoveVertical=1 via InputInjector so Outward's own pipeline
-///      handles movement — animations, physics, and collision all work normally.
+/// Drives the player character toward a navigation target using camera-relative
+/// input injection. Each frame it computes the world-space direction to the target,
+/// projects it into camera space, and sets InjectedVertical / InjectedHorizontal
+/// on InputInjector. Outward's own input pipeline then moves the character with
+/// full animations, physics, and collision — exactly as if the player were holding
+/// the stick in that direction.
 ///
-/// Stuck detection: if the character's position hasn't changed for 0.5s while
-/// navigating, assumes a wall or obstacle and cancels.
+/// No manual character rotation — Outward handles facing from movement input.
 /// </summary>
 public class NavigationController : MonoBehaviour
 {
@@ -22,7 +23,7 @@ public class NavigationController : MonoBehaviour
     private const float ArrivalDistance = 2.5f;
     private const float NavUpdateInterval = 3.0f;
     private const float StuckTimeLimit = 2.0f;
-    private const float StuckMoveThreshold = 0.1f; // units/sec below this = stuck
+    private const float StuckMoveThreshold = 0.1f;
 
     private float _lastUpdateTime;
 
@@ -47,6 +48,8 @@ public class NavigationController : MonoBehaviour
         _target = null;
         _stuckTime = 0f;
         InputInjector.IsNavigating = false;
+        InputInjector.InjectedVertical = 0f;
+        InputInjector.InjectedHorizontal = 0f;
         Plugin.Log.LogInfo("[Nav] Navigation cancelled.");
     }
 
@@ -57,6 +60,9 @@ public class NavigationController : MonoBehaviour
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         if (character == null) return;
 
+        var cam = Camera.main;
+        if (cam == null) return;
+
         var pos = character.transform.position;
         var toTarget = _target.Value - pos;
         toTarget.y = 0f;
@@ -66,14 +72,12 @@ public class NavigationController : MonoBehaviour
         if (dist <= ArrivalDistance)
         {
             Plugin.Log.LogInfo("[Nav] Arrived at target.");
-            _target = null;
-            _stuckTime = 0f;
-            InputInjector.IsNavigating = false;
+            StopNav();
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_arrived" });
             return;
         }
 
-        // Stuck detection — wall or impassable obstacle
+        // Stuck detection
         float moved = Vector3.Distance(pos, _lastPos) / Time.deltaTime;
         if (moved < StuckMoveThreshold)
         {
@@ -81,9 +85,7 @@ public class NavigationController : MonoBehaviour
             if (_stuckTime >= StuckTimeLimit)
             {
                 Plugin.Log.LogInfo("[Nav] Stuck — obstacle detected. Cancelling.");
-                _target = null;
-                _stuckTime = 0f;
-                InputInjector.IsNavigating = false;
+                StopNav();
                 _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "stuck" });
                 return;
             }
@@ -94,19 +96,50 @@ public class NavigationController : MonoBehaviour
         }
         _lastPos = pos;
 
-        // Rotate to face target — InputInjector injects MoveVertical=1 (forward)
-        // so Outward drives the character toward wherever it's facing
-        var dir = toTarget.normalized;
-        character.transform.rotation = Quaternion.RotateTowards(
-            character.transform.rotation,
-            Quaternion.LookRotation(dir),
-            720f * Time.deltaTime  // fast rotation so character snaps to direction quickly
-        );
+        // Compute camera-relative input
+        // Camera forward/right projected onto XZ plane
+        var camFwd = cam.transform.forward;
+        camFwd.y = 0f;
+        camFwd.Normalize();
+
+        var camRight = cam.transform.right;
+        camRight.y = 0f;
+        camRight.Normalize();
+
+        var worldDir = toTarget.normalized;
+
+        // Project world direction onto camera axes
+        // Vertical = how much of worldDir aligns with camera forward (positive = forward)
+        // Horizontal = how much of worldDir aligns with camera right (positive = right)
+        float vertical = Vector3.Dot(worldDir, camFwd);
+        float horizontal = Vector3.Dot(worldDir, camRight);
+
+        InputInjector.InjectedVertical = vertical;
+        InputInjector.InjectedHorizontal = horizontal;
+
+        // In player-command mode, suppress Outward's camera auto-follow so the
+        // user can freely rotate the camera while the character walks toward the target.
+        // In autonomous mode, let auto-follow work (or agent drives camera explicitly).
+        if (!InputInjector.IsAutonomous)
+        {
+            var charCams = CharacterCamera.CharCamList;
+            if (charCams != null && charCams.Count > 0)
+                charCams[0].m_cameraSmoothAutoInput = UnityEngine.Vector2.zero;
+        }
 
         if (Time.time - _lastUpdateTime >= NavUpdateInterval)
         {
             _lastUpdateTime = Time.time;
             _ = Plugin.WsServer!.SendAsync(new { type = "nav_update", distance = dist });
         }
+    }
+
+    private void StopNav()
+    {
+        _target = null;
+        _stuckTime = 0f;
+        InputInjector.IsNavigating = false;
+        InputInjector.InjectedVertical = 0f;
+        InputInjector.InjectedHorizontal = 0f;
     }
 }

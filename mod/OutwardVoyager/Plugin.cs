@@ -14,6 +14,7 @@ public class Plugin : BasePlugin
     internal static GameStateReader? StateReader;
     internal static ActionExecutor? Executor;
     internal static NavigationController? NavController;
+    internal static AutoLoader? AutoLoad;
 
     /// <summary>
     /// Actions queued from background threads to run on the Unity main thread.
@@ -38,6 +39,11 @@ public class Plugin : BasePlugin
 
         // NavigationController drives character movement toward a target each frame
         NavController = AddComponent<NavigationController>();
+
+        // AutoLoader is now driven from Python via menu_* commands.
+        // The MonoBehaviour stays registered (for its type info) but is disabled.
+        AutoLoad = AddComponent<AutoLoader>();
+        AutoLoader.Enabled = false;
 
         // ChatHook patches ChatManager to relay player messages to agent
         ChatHook.Apply();

@@ -331,7 +331,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-15 v9</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-15 v10</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">
@@ -563,6 +563,7 @@ async function refreshGameState() {
     ${maxMana > 0 ? `<div>Mana: <span style="color:#bc8cff">${mana.toFixed(0)}/${maxMana.toFixed(0)}</span></div>` : ''}
     <div>Position: <span style="color:#8b949e">(${(p.pos_x||0).toFixed(1)}, ${(p.pos_y||0).toFixed(1)}, ${(p.pos_z||0).toFixed(1)})</span></div>
     <div>Facing: <span style="color:#8b949e">${((p.rotation_y||0) % 360).toFixed(0)}° ${facingDir(p.rotation_y||0)}</span></div>
+    <div>Camera: <span style="color:#8b949e">${((p.camera_rotation_y||0) % 360).toFixed(0)}° ${facingDir(p.camera_rotation_y||0)}</span></div>
     <div>Combat: <span style="color:${p.in_combat ? '#f85149' : '#3fb950'}">${p.in_combat ? 'YES' : 'no'}</span>
          Dead: <span style="color:${p.is_dead ? '#f85149' : '#3fb950'}">${p.is_dead ? 'YES' : 'no'}</span></div>`;
 }

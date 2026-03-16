@@ -14,5 +14,8 @@ agent/logs/
 mod/OutwardVoyager/obj/
 mod/OutwardVoyager/bin/
 
+# API keys — never commit these
+agent/.env
+
 # Claude Code local settings
 .claude/settings.local.json

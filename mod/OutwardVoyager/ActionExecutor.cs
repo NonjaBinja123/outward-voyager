@@ -61,6 +61,28 @@ public class ActionExecutor
                 Plugin.NavController?.Cancel();
                 _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "navigate_cancel", success = true });
                 break;
+            case "set_autonomous":
+                InputInjector.IsAutonomous = GetBool(cmd.Params, "enabled");
+                Plugin.Log.LogInfo($"[Mode] Autonomous={InputInjector.IsAutonomous}");
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "set_autonomous", success = true, enabled = InputInjector.IsAutonomous });
+                break;
+
+            // ── Menu navigation (driven from Python VisionAutoLoader) ──────────
+            case "menu_query_state":
+                MenuQueryState();
+                break;
+            case "menu_press_continue":
+                MenuPressContinue();
+                break;
+            case "menu_select_character":
+                MenuSelectCharacter(cmd.Params);
+                break;
+            case "menu_select_save":
+                MenuSelectSave(cmd.Params);
+                break;
+            case "menu_press_space":
+                MenuPressSpace();
+                break;
             case "scan_nearby":
                 ScanNearby(cmd.Params);
                 break;
@@ -317,6 +339,112 @@ public class ActionExecutor
             Plugin.Log.LogWarning($"[Il2CppInvoke] {methodName} failed: {ex.Message}");
         }
         return false;
+    }
+
+    // ── Menu navigation commands ─────────────────────────────────────────────
+
+    private void MenuQueryState()
+    {
+        bool inMainMenu = MenuManager.Instance?.IsInMainMenuScene ?? false;
+
+        var ms = UnityEngine.Object.FindObjectOfType<MainScreen>();
+        bool inCharSelect = ms != null && ms.IsCharacterSelectionMenuDisplayed;
+
+        var characters = new List<object>();
+        if (inCharSelect && ms?.m_characterSelection != null)
+        {
+            var slots = ms.m_characterSelection.m_saveSlot;
+            for (int i = 0; i < slots?.Count; i++)
+            {
+                var slot = slots[i];
+                if (slot != null)
+                    characters.Add(new { index = i, name = slot.CharacterName ?? "" });
+            }
+        }
+
+        var nll = NetworkLevelLoader.Instance;
+        bool isLoading   = nll?.IsGameplayLoading     ?? false;
+        bool isLoadDone  = nll?.IsOverallLoadingDone  ?? false;
+        bool allDone     = nll?.AllPlayerDoneLoading  ?? false;
+        bool allReady    = nll?.AllPlayerReadyToContinue ?? false;
+
+        string screen;
+        if (isLoadDone || (!inMainMenu && !isLoading && !inCharSelect))
+            screen = "in_game";
+        else if (isLoading)
+            screen = "loading";
+        else if (inCharSelect)
+            screen = "character_select";
+        else if (inMainMenu)
+            screen = "main_menu";
+        else
+            screen = "unknown";
+
+        Plugin.Log.LogInfo($"[Menu] State query: screen={screen} chars={characters.Count} allDone={allDone} allReady={allReady}");
+        _ = Plugin.WsServer!.SendAsync(new
+        {
+            type = "menu_state",
+            screen,
+            in_main_menu    = inMainMenu,
+            in_char_select  = inCharSelect,
+            is_loading      = isLoading,
+            load_done       = isLoadDone,
+            all_done_loading = allDone,
+            all_ready        = allReady,
+            characters,
+        });
+    }
+
+    private void MenuPressContinue()
+    {
+        var ms = UnityEngine.Object.FindObjectOfType<MainScreen>();
+        if (ms == null) { SendError("MainScreen not found"); return; }
+        Plugin.Log.LogInfo("[Menu] Pressing Continue...");
+        ms.OnContinueClicked();
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_press_continue", success = true });
+    }
+
+    private void MenuSelectCharacter(Dictionary<string, object?> p)
+    {
+        string targetName = GetString(p, "name");
+        var ms = UnityEngine.Object.FindObjectOfType<MainScreen>();
+        var panel = ms?.m_characterSelection;
+        if (panel == null) { SendError("No character panel visible"); return; }
+
+        var slots = panel.m_saveSlot;
+        int idx = 0; // default to first
+        for (int i = 0; i < slots?.Count; i++)
+        {
+            if (slots[i]?.CharacterName?.Equals(targetName, System.StringComparison.OrdinalIgnoreCase) == true)
+            {
+                idx = i;
+                break;
+            }
+        }
+        Plugin.Log.LogInfo($"[Menu] Selecting character '{targetName}' at index {idx}");
+        panel.OnCharacterClicked(idx);
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_select_character", success = true, index = idx });
+    }
+
+    private void MenuSelectSave(Dictionary<string, object?> p)
+    {
+        int idx = (int)GetFloat(p, "index", 0f);
+        var ms = UnityEngine.Object.FindObjectOfType<MainScreen>();
+        var panel = ms?.m_characterSelection;
+        if (panel == null) { SendError("No character panel for save select"); return; }
+        Plugin.Log.LogInfo($"[Menu] Selecting save index {idx}");
+        panel.OnSaveInstanceClicked(idx);
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_select_save", success = true, index = idx });
+    }
+
+    private void MenuPressSpace()
+    {
+        var nll = NetworkLevelLoader.Instance;
+        if (nll == null) { SendError("NetworkLevelLoader not found"); return; }
+        Plugin.Log.LogInfo("[Menu] Skipping load prompt (ForceAllPlayersReady)...");
+        try { nll.SetContinueAfterLoading(); } catch (Exception ex) { Plugin.Log.LogWarning($"SetContinueAfterLoading: {ex.Message}"); }
+        try { nll.ForceAllPlayersReady(); }    catch (Exception ex) { Plugin.Log.LogWarning($"ForceAllPlayersReady: {ex.Message}"); }
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_press_space", success = true });
     }
 
     private void SendError(string reason)

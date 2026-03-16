@@ -164,6 +164,20 @@ def post_chat(body: ChatMessage) -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+@app.get("/api/game_state")
+def get_game_state() -> JSONResponse:
+    """Current game state — written by orchestrator every state push."""
+    data = _read_json(DATA_DIR / "game_state.json", {})
+    return JSONResponse(data)
+
+
+@app.get("/api/llm_usage")
+def get_llm_usage() -> JSONResponse:
+    """LLM provider usage stats."""
+    data = _read_json(DATA_DIR / "llm_usage.json", {})
+    return JSONResponse(data)
+
+
 @app.get("/api/skills")
 def get_skills() -> JSONResponse:
     """Read skills SQLite DB directly."""
@@ -307,7 +321,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-15 v8</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-15 v9</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">
@@ -346,6 +360,18 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card" id="card-log">
     <h2>BepInEx Console</h2>
     <div id="log-body" style="height:200px;overflow-y:auto;font-family:monospace;font-size:0.75rem;background:#0d1117;border-radius:6px;padding:8px;white-space:pre-wrap;word-break:break-all"><span style="color:#444">Waiting for log...</span></div>
+  </div>
+  <div class="card" id="card-state">
+    <h2>Game State</h2>
+    <div id="state-body" style="font-family:monospace;font-size:0.82rem;display:flex;flex-direction:column;gap:4px">
+      <span style="color:#8b949e">Waiting for game state...</span>
+    </div>
+  </div>
+  <div class="card" id="card-llm">
+    <h2>LLM Usage</h2>
+    <div id="llm-body" style="font-size:0.82rem">
+      <span style="color:#8b949e">No usage data yet</span>
+    </div>
   </div>
   <div class="card" id="card-prefs">
     <h2>Preferences</h2>
@@ -487,6 +513,51 @@ async function refreshNovelty() {
   document.getElementById('novelty-body').innerHTML = rows
     ? `<table><thead><tr><th>Key</th><th>Encounters</th></tr></thead><tbody>${rows}</tbody></table>`
     : '<span style="color:#8b949e">No data yet</span>';
+}
+
+async function refreshGameState() {
+  const data = await fetchJSON('/api/game_state');
+  const el = document.getElementById('state-body');
+  if (!data || !data.player) {
+    el.innerHTML = '<span style="color:#e3b341">No game state — game not loaded or agent not connected</span>';
+    return;
+  }
+  const p = data.player;
+  const hp = p.health || 0, maxHp = p.max_health || 100;
+  const stam = p.stamina || 0, maxStam = p.max_stamina || 100;
+  const mana = p.mana || 0, maxMana = p.max_mana || 0;
+  const hpPct = (hp / Math.max(1, maxHp) * 100).toFixed(0);
+  const stamPct = (stam / Math.max(1, maxStam) * 100).toFixed(0);
+  const hpColor = hpPct > 50 ? '#3fb950' : hpPct > 25 ? '#e3b341' : '#f85149';
+  const stamColor = stamPct > 50 ? '#3fb950' : stamPct > 25 ? '#e3b341' : '#f85149';
+  el.innerHTML = `
+    <div>Scene: <span style="color:#58a6ff">${data.scene || 'unknown'}</span></div>
+    <div>Health: <span style="color:${hpColor}">${hp.toFixed(0)}/${maxHp.toFixed(0)} (${hpPct}%)</span></div>
+    <div>Stamina: <span style="color:${stamColor}">${stam.toFixed(0)}/${maxStam.toFixed(0)} (${stamPct}%)</span></div>
+    ${maxMana > 0 ? `<div>Mana: <span style="color:#bc8cff">${mana.toFixed(0)}/${maxMana.toFixed(0)}</span></div>` : ''}
+    <div>Position: <span style="color:#8b949e">(${(p.pos_x||0).toFixed(1)}, ${(p.pos_y||0).toFixed(1)}, ${(p.pos_z||0).toFixed(1)})</span></div>
+    <div>Combat: <span style="color:${p.in_combat ? '#f85149' : '#3fb950'}">${p.in_combat ? 'YES' : 'no'}</span>
+         Dead: <span style="color:${p.is_dead ? '#f85149' : '#3fb950'}">${p.is_dead ? 'YES' : 'no'}</span></div>`;
+}
+
+async function refreshLLMUsage() {
+  const data = await fetchJSON('/api/llm_usage');
+  const el = document.getElementById('llm-body');
+  if (!data || !Object.keys(data).length) {
+    el.innerHTML = '<span style="color:#8b949e">No usage data yet</span>';
+    return;
+  }
+  const rows = Object.entries(data).map(([name, info]) => {
+    const cost = info.est_cost_usd > 0 ? `$${info.est_cost_usd.toFixed(4)}` : 'free';
+    return `<tr>
+      <td style="color:#58a6ff">${name}</td>
+      <td>${info.calls}</td>
+      <td style="color:${info.failures > 0 ? '#f85149' : '#3fb950'}">${info.failures}</td>
+      <td>${cost}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table><thead><tr><th>Provider</th><th>Calls</th><th>Fails</th><th>Est. Cost</th></tr></thead>
+    <tbody>${rows}</tbody></table>`;
 }
 
 async function checkStatus() {
@@ -664,15 +735,17 @@ async function safeRun(fn) { try { await fn(); } catch(e) {} }
 // ── Draggable / resizable layout ─────────────────────────────────────────
 var _DEFAULT_LAYOUT = {
   'card-chat':    {left:20,   top:20,   width:600, height:340},
-  'card-stream':  {left:640,  top:20,   width:600, height:380},
-  'card-diag':    {left:1260, top:20,   width:340, height:260},
-  'card-log':     {left:1260, top:300,  width:340, height:280},
+  'card-state':   {left:640,  top:20,   width:300, height:220},
+  'card-llm':     {left:960,  top:20,   width:300, height:220},
+  'card-stream':  {left:640,  top:260,  width:600, height:380},
+  'card-diag':    {left:1280, top:20,   width:340, height:260},
+  'card-log':     {left:1280, top:300,  width:340, height:340},
   'card-prefs':   {left:20,   top:380,  width:440, height:280},
   'card-combat':  {left:480,  top:380,  width:440, height:280},
-  'card-map':     {left:940,  top:380,  width:440, height:280},
+  'card-map':     {left:940,  top:660,  width:440, height:280},
   'card-skills':  {left:20,   top:680,  width:440, height:280},
   'card-sandbox': {left:480,  top:680,  width:440, height:280},
-  'card-goals':   {left:940,  top:680,  width:440, height:280},
+  'card-goals':   {left:940,  top:380,  width:440, height:280},
   'card-novelty': {left:20,   top:980,  width:440, height:280}
 };
 
@@ -728,7 +801,8 @@ async function refreshAll() {
   document.getElementById('last-refresh').textContent = 'Refreshing...';
   await Promise.all([
     refreshDiag(), refreshChat(), refreshLog(), refreshPrefs(), refreshCombat(), refreshMap(),
-    refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus()
+    refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
+    refreshGameState(), refreshLLMUsage()
   ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }
@@ -740,7 +814,9 @@ async function refreshAll() {
 initLayout();
 refreshAll();
 setInterval(refreshAll, 10000);
-setInterval(refreshLog, 2000);  // live log updates
+setInterval(refreshLog, 2000);   // live log updates
+setInterval(refreshChat, 3000);  // fast chat updates
+setInterval(refreshGameState, 5000);  // game state every 5s
 </script>
 </body>
 </html>"""

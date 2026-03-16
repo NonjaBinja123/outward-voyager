@@ -92,16 +92,26 @@ You CANNOT: attack, use items, crouch, sprint, dodge, or open menus. If asked to
 do something outside your capabilities, say so honestly. Base your answers on the
 actual game state provided — do not invent values for health, position, or anything else."""
 
-STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent inside a video game.
+STRATEGY_SYSTEM_PROMPT = """You are an autonomous AI agent playing the game Outward.
 Given the current game state and your goals, decide what to do next.
 
-Respond with a JSON object:
+Understanding the stats:
+- Health, Stamina, Mana are shown as current/max. 98.5/100 means NEARLY FULL (good).
+  Only consider resting if health or stamina is below 50% of max.
+- in_combat: true means you are actively fighting — prioritize survival.
+- is_dead: true means you died — reflect on what went wrong.
+
+Available intents: explore, gather_food, rest, interact, investigate, flee, trade, craft
+
+Respond with ONLY a JSON object (no markdown, no extra text):
 {
-  "intent": "<action tag, e.g. 'explore', 'gather_food', 'rest', 'interact'>",
+  "intent": "<action tag>",
   "reasoning": "<one sentence>",
   "chat": null
 }
-Be specific — use the actual game state data provided. No generic responses."""
+Be specific — use the actual game state data provided. Do not rest or wait unless
+health or stamina is genuinely low (below 50%). If stats are fine, explore or
+investigate your surroundings."""
 
 
 class Orchestrator:
@@ -134,6 +144,7 @@ class Orchestrator:
 
         self._chat_log_path = Path("./data/chat_log.jsonl")
         self._pending_dashboard_path = Path("./data/pending_dashboard_chat.json")
+        self._game_state_path = Path("./data/game_state.json")
         self._scan_for_player: bool = False  # True only when player explicitly asked to look
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -158,6 +169,13 @@ class Orchestrator:
     async def _on_game_state(self, msg: dict) -> None:
         prev_state = self._current_state
         self._current_state = msg
+        # Persist for dashboard consumption
+        try:
+            self._game_state_path.write_text(
+                json.dumps(msg, default=str), encoding="utf-8"
+            )
+        except Exception:
+            pass
         scene = msg.get("scene", "unknown")
         player = msg.get("player", {})
         logger.debug(
@@ -539,7 +557,25 @@ class Orchestrator:
         personality = self._reward.preferences.describe_personality()
         combat_exp = self._combat.describe_combat_experience()
 
-        user_msg = f"""Current game state: {self._current_state}
+        p = self._current_state.get("player", {})
+        scene = self._current_state.get("scene", "unknown")
+        hp = p.get("health", 0)
+        max_hp = p.get("max_health", 100)
+        stam = p.get("stamina", 0)
+        max_stam = p.get("max_stamina", 100)
+        mana = p.get("mana", 0)
+        max_mana = p.get("max_mana", 0)
+        state_summary = (
+            f"Scene: {scene}\n"
+            f"Health: {hp:.0f}/{max_hp:.0f} ({hp/max(1,max_hp)*100:.0f}%)\n"
+            f"Stamina: {stam:.0f}/{max_stam:.0f} ({stam/max(1,max_stam)*100:.0f}%)\n"
+            f"Mana: {mana:.0f}/{max_mana:.0f}\n"
+            f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"
+            f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
+        )
+        user_msg = f"""Current state:
+{state_summary}
+
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
 Familiar locations: {[l.scene for l in familiar]}

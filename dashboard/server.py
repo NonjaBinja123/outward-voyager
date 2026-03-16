@@ -515,6 +515,18 @@ async function refreshNovelty() {
     : '<span style="color:#8b949e">No data yet</span>';
 }
 
+function facingDir(y) {
+  y = ((y % 360) + 360) % 360;
+  if (y < 22.5 || y >= 337.5) return '(N)';
+  if (y < 67.5) return '(NE)';
+  if (y < 112.5) return '(E)';
+  if (y < 157.5) return '(SE)';
+  if (y < 202.5) return '(S)';
+  if (y < 247.5) return '(SW)';
+  if (y < 292.5) return '(W)';
+  return '(NW)';
+}
+
 async function refreshGameState() {
   const data = await fetchJSON('/api/game_state');
   const el = document.getElementById('state-body');
@@ -536,6 +548,7 @@ async function refreshGameState() {
     <div>Stamina: <span style="color:${stamColor}">${stam.toFixed(0)}/${maxStam.toFixed(0)} (${stamPct}%)</span></div>
     ${maxMana > 0 ? `<div>Mana: <span style="color:#bc8cff">${mana.toFixed(0)}/${maxMana.toFixed(0)}</span></div>` : ''}
     <div>Position: <span style="color:#8b949e">(${(p.pos_x||0).toFixed(1)}, ${(p.pos_y||0).toFixed(1)}, ${(p.pos_z||0).toFixed(1)})</span></div>
+    <div>Facing: <span style="color:#8b949e">${((p.rotation_y||0) % 360).toFixed(0)}° ${facingDir(p.rotation_y||0)}</span></div>
     <div>Combat: <span style="color:${p.in_combat ? '#f85149' : '#3fb950'}">${p.in_combat ? 'YES' : 'no'}</span>
          Dead: <span style="color:${p.is_dead ? '#f85149' : '#3fb950'}">${p.is_dead ? 'YES' : 'no'}</span></div>`;
 }

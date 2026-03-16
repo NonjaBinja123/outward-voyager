@@ -33,17 +33,17 @@ public static class InputInjector
 
     [HarmonyPatch(typeof(ControlsInput), nameof(ControlsInput.MoveVertical))]
     [HarmonyPostfix]
-    private static void MoveVertical_Postfix(int _playerNum, ref float __result)
+    private static void MoveVertical_Postfix(int _playerID, ref float __result)
     {
-        if (IsNavigating && _playerNum == PlayerNum)
+        if (IsNavigating && _playerID == PlayerNum)
             __result = 1.0f;
     }
 
     [HarmonyPatch(typeof(ControlsInput), nameof(ControlsInput.MoveHorizontal))]
     [HarmonyPostfix]
-    private static void MoveHorizontal_Postfix(int _playerNum, ref float __result)
+    private static void MoveHorizontal_Postfix(int _playerID, ref float __result)
     {
-        if (IsNavigating && _playerNum == PlayerNum)
+        if (IsNavigating && _playerID == PlayerNum)
             __result = 0.0f;
     }
 }

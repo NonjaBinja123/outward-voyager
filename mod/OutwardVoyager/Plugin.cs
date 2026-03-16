@@ -44,7 +44,8 @@ public class Plugin : BasePlugin
 
         // InputInjector patches ControlsInput so agent movement goes through
         // Outward's own pipeline (animations, physics, collision)
-        InputInjector.Apply();
+        try { InputInjector.Apply(); }
+        catch (Exception ex) { Log.LogError($"InputInjector failed: {ex.Message}"); }
 
         Log.LogInfo($"{MyPluginInfo.PLUGIN_NAME} loaded. WebSocket listening on ws://localhost:9999/");
     }

@@ -10,7 +10,9 @@ This is a research/passion project exploring emergent AI behavior. The agent sho
 
 **Tier 1 (foundation):** BepInEx C# mod → WebSocket → Python orchestrator → LLM router → skill database → ChromaDB memory → goal system
 
-**Tier 2 (experimental):** Reward system → emergent preferences → combat learning → self-modifying code sandbox → aesthetic discovery → observation dashboard
+**Tier 2 (experimental):** Reward system → emergent preferences → combat learning → self-modifying code sandbox → aesthetic discovery → observation dashboard → internet sharing → social relationships
+
+**Stretch goals:** Standalone Windows .exe deployer (Phase 8) → cross-game portability via universal WebSocket protocol (Phase 9)
 
 ## Key technical details
 
@@ -40,26 +42,35 @@ This is a research/passion project exploring emergent AI behavior. The agent sho
 outward-voyager/
 ├── CLAUDE.md                 # This file
 ├── PROJECT_PLAN.md           # Full architecture and task list
-├── mod/                      # C# BepInEx mod (Visual Studio / Rider project)
-│   ├── OutwardVoyager/
-│   │   ├── Plugin.cs         # BepInEx plugin entry point
-│   │   ├── GameStateReader.cs
-│   │   ├── ActionExecutor.cs
-│   │   ├── ChatHook.cs
-│   │   └── WebSocketServer.cs
-│   └── OutwardVoyager.csproj
+├── PROTOCOL.md               # Universal WebSocket protocol spec (created in Phase 9)
+├── mod/                      # C# BepInEx mod projects (Visual Studio / Rider)
+│   ├── VoyagerBridge/        # Shared bridge DLL: WebSocket server, IGameAdapter interface
+│   │   └── VoyagerBridge.csproj
+│   └── OutwardAdapter/       # Outward-specific thin adapter: HarmonyX hooks → universal schema
+│       ├── Plugin.cs         # BepInEx plugin entry point
+│       ├── GameStateReader.cs
+│       ├── ActionExecutor.cs
+│       ├── ChatHook.cs
+│       └── OutwardAdapter.csproj
 ├── agent/                    # Python agent
 │   ├── main.py               # Entry point
 │   ├── orchestrator.py       # Strategy loop + rule engine
 │   ├── llm_router.py         # Multi-provider LLM management
 │   ├── skills/
 │   │   ├── database.py       # SQLite skill storage
-│   │   ├── schema.py         # Skill data structures
+│   │   ├── schema.py         # Skill data structures (includes game_scope, source_game_id)
 │   │   └── composer.py       # Skill composition system
 │   ├── memory/
 │   │   ├── journal.py        # ChromaDB adventure journal
 │   │   ├── mental_map.py     # Place familiarity tracking
 │   │   └── goals.py          # Session + long-term goal system
+│   ├── social/               # Phase 4 stretch — social memory + relationships
+│   │   ├── memory.py         # SocialMemoryManager: write/retrieve interaction records
+│   │   └── relationships.py  # RelationshipEngine: disposition, trust, trait inference
+│   ├── protocol/             # Phase 9 — universal game interface layer
+│   │   ├── adapter.py        # Parse/validate universal WebSocket messages
+│   │   ├── registry.py       # Track connected game from adapter_info
+│   │   └── dispatcher.py     # Route messages to orchestrator
 │   ├── reward/               # Tier 2
 │   │   ├── engine.py         # Reward signal processing
 │   │   ├── novelty.py        # Novelty decay algorithm
@@ -67,9 +78,22 @@ outward-voyager/
 │   ├── sandbox/              # Tier 2
 │   │   ├── executor.py       # Sandboxed code execution
 │   │   └── validator.py      # Code validation pipeline
-│   └── config.yaml           # LLM provider config, priority order, settings
-└── dashboard/                # Tier 2 — web observation dashboard
-    └── (TBD)
+│   ├── tools/                # CLI utilities
+│   │   ├── export.py         # voyager export — snapshot agent state to zip
+│   │   └── migrate.py        # voyage migrate — transfer experience to new game
+│   └── config.yaml           # LLM provider config, dashboard, social, portability settings
+├── dashboard/                # Tier 2 — web observation dashboard
+│   ├── backend/
+│   │   ├── app.py            # FastAPI app: WebSocket relay, REST endpoints, auth middleware
+│   │   └── identity.py       # IdentityManager: stable UUIDs for remote users
+│   ├── frontend/
+│   │   └── index.html        # Vanilla HTML/JS dashboard (no build step, no npm)
+│   └── tunnel/
+│       └── manager.py        # CloudflareTunnelManager: optional public sharing via cloudflared
+└── installer/                # Phase 8 — Windows .exe deployer
+    ├── setup.iss             # Inno Setup script: full installer wizard
+    └── VoyagerLauncher/      # C# WinForms system tray launcher
+        └── VoyagerLauncher.csproj
 ```
 
 ## Conventions

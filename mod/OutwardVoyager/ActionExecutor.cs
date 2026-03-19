@@ -397,6 +397,15 @@ public class ActionExecutor
                 ok = TryInvokeOneArgMethod(character.Inventory, "UseItem", found);
             }
 
+            // Try character.OnUseItem(itemUID) — found via binary scan of interop DLL
+            if (!ok)
+            {
+                string? itemUid = found.UID;
+                if (!string.IsNullOrEmpty(itemUid))
+                    ok = TryInvokeOneArgMethod(character, "OnUseItem", itemUid);
+                Plugin.Log.LogInfo($"[UseItem] OnUseItem({itemUid ?? "null"}) → ok={ok}");
+            }
+
             // Try Food component: food.OnEat(character) or similar
             if (!ok)
             {

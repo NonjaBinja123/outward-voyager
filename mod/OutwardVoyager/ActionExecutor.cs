@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using UnityEngine;
@@ -111,7 +112,11 @@ public class ActionExecutor
                 OpenMenu(cmd.Params);
                 break;
             case "close_menu":
-                CloseMenu();
+                PressKey(0x1B); // Escape
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "close_menu", success = true });
+                break;
+            case "press_key":
+                PressNamedKey(cmd.Params);
                 break;
             default:
                 Plugin.Log.LogWarning($"Unknown action: {cmd.Action}");
@@ -681,109 +686,73 @@ public class ActionExecutor
         _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_press_space", success = true });
     }
 
+    // ── Windows key injection ────────────────────────────────────────────────
+
+    [DllImport("user32.dll")] private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
+    private const uint KEYEVENTF_KEYUP = 0x0002;
+
+    /// <summary>Send a virtual key press + release to the focused window.</summary>
+    private static void PressKey(byte vk)
+    {
+        keybd_event(vk, 0, 0, IntPtr.Zero);
+        System.Threading.Thread.Sleep(50);
+        keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
+        Plugin.Log.LogInfo($"[Key] Pressed VK 0x{vk:X2}");
+    }
+
     /// <summary>
-    /// Open a game menu panel via CharacterUI.
-    /// params: { "menu": "inventory" | "skills" | "map" | "equipment" | "quest" }
-    /// Falls back to trying common method names on CharacterUI via reflection.
+    /// Open a game menu via the keyboard shortcut Outward uses.
+    /// params: { "menu": "inventory" | "skills" | "map" | "equipment" | "quest" | "pause" }
     /// </summary>
     private void OpenMenu(Dictionary<string, object?> p)
     {
         string menu = GetString(p, "menu", "inventory").ToLowerInvariant();
-        try
+
+        // Outward default key bindings (Virtual Key codes)
+        byte vk = menu switch
         {
-            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
-            if (character == null) { SendError("no character"); return; }
+            "inventory" or "bag" or "equipment" => 0x09, // Tab
+            "skills"    or "abilities"          => 0x4B, // K
+            "map"                               => 0x4D, // M
+            "quest"     or "journal"            => 0x4A, // J
+            "pause"     or "esc"                => 0x1B, // Escape
+            _                                   => 0x09, // Default: Tab
+        };
 
-            // CharacterUI is the per-character HUD/menu controller
-            var charUI = character.CharacterUI;
-            if (charUI == null) { SendError("CharacterUI not found"); return; }
-
-            bool ok = false;
-
-            // Try menu-specific methods first, then generic show
-            switch (menu)
-            {
-                case "inventory":
-                case "bag":
-                    ok = TryInvokeNoArgMethod(charUI, "ShowInventoryPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "OpenInventoryPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "ToggleInventory");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "ShowBag");
-                    break;
-                case "skills":
-                case "abilities":
-                    ok = TryInvokeNoArgMethod(charUI, "ShowSkillsPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "OpenSkillPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "ToggleSkillTree");
-                    break;
-                case "map":
-                    ok = TryInvokeNoArgMethod(charUI, "ShowMap");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "OpenMap");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "ToggleMap");
-                    break;
-                case "equipment":
-                case "gear":
-                    ok = TryInvokeNoArgMethod(charUI, "ShowEquipmentPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "OpenEquipmentPanel");
-                    break;
-                case "quest":
-                case "journal":
-                    ok = TryInvokeNoArgMethod(charUI, "ShowQuestPanel");
-                    if (!ok) ok = TryInvokeNoArgMethod(charUI, "OpenQuestLog");
-                    break;
-            }
-
-            // Log CharacterUI method names once for diagnostics
-            LogCharacterUIMethods(charUI);
-
-            Plugin.Log.LogInfo($"[OpenMenu] menu={menu}: {(ok ? "opened" : "no matching method")}");
-            _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "open_menu", success = ok, menu });
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogWarning($"[OpenMenu] error: {ex.Message}");
-            SendError($"open_menu failed: {ex.Message}");
-        }
+        PressKey(vk);
+        Plugin.Log.LogInfo($"[OpenMenu] menu={menu} vk=0x{vk:X2}");
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "open_menu", success = true, menu });
     }
 
-    private static bool _charUIDumped = false;
-    private static void LogCharacterUIMethods(Il2CppSystem.Object charUI)
+    /// <summary>
+    /// Press an arbitrary named key.
+    /// params: { "key": "tab" | "escape" | "i" | "m" | "k" | "j" | "f" | "space" | ... }
+    /// </summary>
+    private void PressNamedKey(Dictionary<string, object?> p)
     {
-        if (_charUIDumped) return;
-        _charUIDumped = true;
-        try
+        string key = GetString(p, "key", "").ToLowerInvariant();
+        byte vk = key switch
         {
-            var methods = charUI.GetIl2CppType().GetMethods(
-                Il2CppSystem.Reflection.BindingFlags.Public |
-                Il2CppSystem.Reflection.BindingFlags.Instance);
-            Plugin.Log.LogInfo($"[CharacterUI] {methods.Count} public methods:");
-            foreach (var m in methods)
-                if (m.GetParameters().Count == 0)
-                    Plugin.Log.LogInfo($"  {m.Name}()");
-        }
-        catch { }
-    }
-
-    private void CloseMenu()
-    {
-        try
-        {
-            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
-            if (character == null) { SendError("no character"); return; }
-
-            var charUI = character.CharacterUI;
-            if (charUI == null) { SendError("CharacterUI not found"); return; }
-
-            bool ok = TryInvokeNoArgMethod(charUI, "CloseAllMenus");
-            if (!ok) ok = TryInvokeNoArgMethod(charUI, "HideAllPanels");
-            if (!ok) ok = TryInvokeNoArgMethod(charUI, "CloseMenus");
-
-            _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "close_menu", success = ok });
-        }
-        catch (Exception ex)
-        {
-            SendError($"close_menu failed: {ex.Message}");
-        }
+            "tab"    => 0x09,
+            "escape" or "esc" => 0x1B,
+            "space"  => 0x20,
+            "enter"  => 0x0D,
+            "f"      => 0x46,
+            "e"      => 0x45,
+            "i"      => 0x49,
+            "m"      => 0x4D,
+            "k"      => 0x4B,
+            "j"      => 0x4A,
+            "g"      => 0x47,
+            "b"      => 0x42,
+            "r"      => 0x52,
+            "t"      => 0x54,
+            "c"      => 0x43,
+            _        => 0,
+        };
+        if (vk == 0) { SendError($"unknown key: {key}"); return; }
+        PressKey(vk);
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "press_key", success = true, key });
     }
 
     /// <summary>

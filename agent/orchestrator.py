@@ -204,6 +204,8 @@ class Orchestrator:
         self._screen_message: str = ""
         self._known_skills: list[dict] = []  # Known skills from SkillKnowledge
         self._pending_interact_uid: str = ""  # Interact with this uid after nav arrives
+        self._blocked_nav_targets: set[tuple[int, int]] = set()  # (x//5, z//5) grid cells
+        self._current_nav_target: tuple[float, float] = (0.0, 0.0)  # (x, z) of current nav
 
         # Prevent concurrent strategy runs from stepping on each other
         self._strategy_lock = asyncio.Lock()
@@ -745,8 +747,35 @@ class Orchestrator:
             await self._game.say(reply)
             self._log_chat("voyager", reply)
 
+    def _is_nav_blocked(self, x: float, z: float) -> bool:
+        """Check if a target coordinate is near a known blocked cell (5m grid)."""
+        cell = (int(x) // 5, int(z) // 5)
+        # Also check adjacent cells — blocked walls affect a wider area
+        for dx in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                if (cell[0] + dx, cell[1] + dz) in self._blocked_nav_targets:
+                    return True
+        return False
+
+    def _mark_nav_blocked(self, x: float, z: float) -> None:
+        """Record that navigation to this area failed."""
+        cell = (int(x) // 5, int(z) // 5)
+        self._blocked_nav_targets.add(cell)
+        # Bound memory growth — drop oldest if too many
+        if len(self._blocked_nav_targets) > 50:
+            self._blocked_nav_targets.pop()
+
     async def _navigate_to(self, x: float, y: float, z: float, run: bool = False) -> None:
         """Wrapper around game_client.navigate_to that tracks navigation state."""
+        # If target is known blocked, jitter it before sending
+        if self._is_nav_blocked(x, z):
+            jitter_angle = random.uniform(0, 2 * math.pi)
+            jitter_dist = random.uniform(8.0, 15.0)
+            x += math.sin(jitter_angle) * jitter_dist
+            z += math.cos(jitter_angle) * jitter_dist
+            logger.info(f"[Nav] Blocked target jittered to ({x:.1f},{z:.1f})")
+
+        self._current_nav_target = (x, z)
         player = self._current_state.get("player", {})
         px = float(player.get("pos_x", 0))
         pz = float(player.get("pos_z", 0))
@@ -778,6 +807,13 @@ class Orchestrator:
         reason = msg.get("reason", "unknown")
         logger.warning(f"[Nav] Navigation failed: {reason}")
         self._is_navigating = False
+        # Remember this coordinate as blocked so we don't try again
+        tx, tz = self._current_nav_target
+        if tx != 0.0 or tz != 0.0:
+            self._mark_nav_blocked(tx, tz)
+            scene = self._current_state.get("scene", "unknown")
+            self._map.add_note(scene, f"nav blocked near ({tx:.0f},{tz:.0f}): {reason}")
+            logger.info(f"[Nav] Marked ({tx:.0f},{tz:.0f}) as blocked in {scene}")
         asyncio.create_task(self._run_strategy())  # re-plan with different direction
 
     async def _on_nav_update(self, msg: dict) -> None:
@@ -917,11 +953,19 @@ class Orchestrator:
         # Keybinding context — what keys the agent can press
         keybinding_context = self._keybindings.as_context_string()
 
+        # Blocked nav targets — the LLM should avoid these grid cells
+        blocked_summary = ""
+        if self._blocked_nav_targets:
+            samples = list(self._blocked_nav_targets)[:5]
+            blocked_summary = "\nBlocked nav areas (5m grid): " + ", ".join(
+                f"({x*5},{z*5})" for x, z in samples
+            )
+
         user_msg = f"""Current state:
 {state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{skills_summary}{screen_msg_summary}
 
 Active goal: {goal.description if goal else 'none'}
-Recent journal: {recent}
+Recent journal: {recent}{blocked_summary}
 Familiar locations: {[l.scene for l in familiar]}
 Personality: {personality}
 Combat experience: {combat_exp}

@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from auto_loader import VisionAutoLoader
+# from auto_loader import VisionAutoLoader  # disabled — menu auto-load deferred; use menu_query_state directly if needed later
 from game_client import GameClient
 from llm_router import LLMRouter
 from memory.goals import Goal, GoalSystem
@@ -178,11 +178,12 @@ class Orchestrator:
         """Sync autonomous mode flag and kick off vision-guided menu loading."""
         await self._game.set_autonomous(self._autonomous_movement)
         logger.info(f"Synced autonomous_movement={self._autonomous_movement} to mod")
-        # Cancel any previous loader task (stale from a prior connect)
-        if self._loader_task and not self._loader_task.done():
-            self._loader_task.cancel()
-        loader = VisionAutoLoader(self._game, self._config)
-        self._loader_task = asyncio.create_task(loader.run())
+        # VisionAutoLoader disabled — manually load into game before starting agent.
+        # Re-enable later using menu_query_state structured data (no vision needed).
+        # if self._loader_task and not self._loader_task.done():
+        #     self._loader_task.cancel()
+        # loader = VisionAutoLoader(self._game, self._config)
+        # self._loader_task = asyncio.create_task(loader.run())
 
     async def _on_game_state(self, msg: dict) -> None:
         prev_state = self._current_state

@@ -11,20 +11,60 @@ Then open: http://localhost:8080
 import asyncio
 import io
 import json
+import sys
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import os
+import yaml
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-app = FastAPI(title="Outward Voyager Dashboard")
-
 DATA_DIR = Path(__file__).parent.parent / "agent" / "data"
+_CONFIG_PATH = Path(__file__).parent.parent / "agent" / "config.yaml"
+
+# ── Optional Cloudflare tunnel ────────────────────────────────────────────────
+# Import from dashboard/tunnel/manager.py — add parent dir so relative import works.
+sys.path.insert(0, str(Path(__file__).parent))
+try:
+    from tunnel.manager import CloudflareTunnelManager as _CloudflareTunnelManager
+    _TUNNEL_AVAILABLE = True
+except Exception:
+    _TUNNEL_AVAILABLE = False
+
+_tunnel: Optional[Any] = None
+
+
+def _load_config() -> dict:
+    """Load agent/config.yaml; returns empty dict on any error."""
+    try:
+        return yaml.safe_load(_CONFIG_PATH.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return {}
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
+    """Start/stop optional Cloudflare tunnel based on config.yaml."""
+    global _tunnel
+    cfg = _load_config()
+    dash_cfg = cfg.get("dashboard", {})
+    if dash_cfg.get("enable_public_sharing") and _TUNNEL_AVAILABLE:
+        port = dash_cfg.get("port", 7770)
+        _tunnel = _CloudflareTunnelManager(port=port, data_dir=str(DATA_DIR))
+        await _tunnel.start()
+    yield
+    if _tunnel is not None:
+        await _tunnel.stop()
+        _tunnel = None
+
+
+app = FastAPI(title="Outward Voyager Dashboard", lifespan=_lifespan)
 
 # Optional shared-secret auth. Set VOYAGER_DASHBOARD_SECRET env var to enable.
 # If empty/unset, auth is disabled (safe for local-only use).
@@ -265,8 +305,7 @@ def get_keybindings() -> JSONResponse:
 
 # ── Identity endpoints (Phase 7) ──────────────────────────────────────────────
 
-import sys as _sys
-_sys.path.insert(0, str(Path(__file__).parent / "backend"))
+sys.path.insert(0, str(Path(__file__).parent / "backend"))
 try:
     from identity import IdentityManager as _IdentityManager
     _identity = _IdentityManager(str(DATA_DIR))
@@ -328,6 +367,9 @@ def post_override(body: OverrideCommand) -> JSONResponse:
 @app.get("/api/tunnel")
 def get_tunnel_url() -> JSONResponse:
     """Public tunnel URL if cloudflared is running."""
+    # Prefer the in-process tunnel manager if active.
+    if _tunnel is not None and _tunnel.public_url:
+        return JSONResponse({"url": _tunnel.public_url, "active": True})
     url_file = DATA_DIR / "tunnel_url.txt"
     if url_file.exists():
         url = url_file.read_text(encoding="utf-8").strip()

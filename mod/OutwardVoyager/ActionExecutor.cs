@@ -101,6 +101,9 @@ public class ActionExecutor
             case "equip_item":
                 EquipItem(cmd.Params);
                 break;
+            case "read_skills":
+                ReadSkills();
+                break;
             default:
                 Plugin.Log.LogWarning($"Unknown action: {cmd.Action}");
                 SendError($"unknown action: {cmd.Action}");
@@ -646,6 +649,99 @@ public class ActionExecutor
         try { nll.SetContinueAfterLoading(); } catch (Exception ex) { Plugin.Log.LogWarning($"SetContinueAfterLoading: {ex.Message}"); }
         try { nll.ForceAllPlayersReady(); }    catch (Exception ex) { Plugin.Log.LogWarning($"ForceAllPlayersReady: {ex.Message}"); }
         _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_press_space", success = true });
+    }
+
+    /// <summary>
+    /// Read the character's known skills from SkillKnowledge inventory.
+    /// Returns a list of skill names and descriptions so Voyager can know what it's capable of.
+    /// </summary>
+    private void ReadSkills()
+    {
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) { SendError("no player character"); return; }
+
+            var inv = character.Inventory;
+            if (inv == null) { SendError("no inventory"); return; }
+
+            var skillList = new List<object>();
+
+            // SkillKnowledge holds learned skills — try casting to ItemContainer to iterate
+            try
+            {
+                var sk = inv.SkillKnowledge;
+                if (sk != null)
+                {
+                    // CharacterSkillKnowledge may extend BasicItemContainer — try the cast
+                    var container = sk.TryCast<ItemContainer>();
+                    Il2CppSystem.Collections.Generic.List<Item>? items = null;
+
+                    if (container != null)
+                    {
+                        items = container.GetContainedItems();
+                    }
+                    else
+                    {
+                        // Fall back: iterate via reflection — find any IList<Item> field
+                        var skType = (sk as Il2CppSystem.Object)!.GetIl2CppType();
+                        foreach (var fname in new[] { "m_learnedItems", "m_skills", "m_learnedSkills", "LearnedSkills" })
+                        {
+                            var f = skType.GetField(fname,
+                                Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                                Il2CppSystem.Reflection.BindingFlags.Public |
+                                Il2CppSystem.Reflection.BindingFlags.Instance);
+                            if (f == null) continue;
+                            // Value is opaque — just log names; detailed parse skipped
+                            Plugin.Log.LogInfo($"[ReadSkills] Found field {fname} — complex type, skipping");
+                            break;
+                        }
+                    }
+
+                    if (items != null)
+                    {
+                        foreach (var item in items)
+                        {
+                            if (item == null) continue;
+                            string name = item.DisplayName ?? item.name ?? "";
+                            string desc = "";
+                            try
+                            {
+                                var type = item.GetIl2CppType();
+                                foreach (var propName in new[] { "Description", "m_description", "GeneralDescription" })
+                                {
+                                    var prop = type.GetProperty(propName,
+                                        Il2CppSystem.Reflection.BindingFlags.Public |
+                                        Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                                        Il2CppSystem.Reflection.BindingFlags.Instance);
+                                    if (prop != null)
+                                    {
+                                        var val = prop.GetValue(item, null);
+                                        if (val != null) { desc = val.ToString() ?? ""; break; }
+                                    }
+                                }
+                            }
+                            catch { /* description read failed — skip */ }
+
+                            if (!string.IsNullOrWhiteSpace(name))
+                                skillList.Add(new { name, description = desc });
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Log.LogWarning($"[ReadSkills] SkillKnowledge read failed: {ex.Message}");
+            }
+
+            Plugin.Log.LogInfo($"[ReadSkills] Found {skillList.Count} known skills.");
+            _ = Plugin.WsServer!.SendAsync(new { type = "skills", skills = skillList });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[ReadSkills] error: {ex.Message}");
+            SendError($"read_skills failed: {ex.Message}");
+        }
     }
 
     private void SendError(string reason)

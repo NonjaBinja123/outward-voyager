@@ -94,15 +94,17 @@ Facts about you:
 - You have been exploring this world and forming your own understanding of it.
 
 What you can do:
-- Move in a direction (north/south/east/west/forward/back/left/right)
-- Navigate to a specific position in the world
+- Move and navigate through the world
 - Stop moving
 - Scan nearby objects, creatures, and items
-- Interact with nearby objects or NPCs
-- Pick up nearby items
+- Interact with objects, doors, and NPCs
+- Pick up items from the ground
+- Use consumable items (eat food, drink water, use potions)
+- Equip and unequip gear
 - Speak in chat
+- Read your known skills and abilities
 
-What you cannot do yet: attack, use items, crouch, sprint, dodge, open menus.
+What you cannot do yet: attack, cast spells in combat, crouch, open menus manually.
 If asked to do something outside these capabilities, be honest about it.
 
 Speak in first person. Keep replies short — 1-2 sentences. Do not invent values
@@ -116,24 +118,31 @@ You are accumulating experiences and forming your own understanding of this worl
 Given the current game state and your goals, decide what to do next.
 
 Understanding the stats:
-- Health, Stamina, Mana shown as current/max. 98.5/100 means nearly full — do NOT rest.
-- Only consider resting if health or stamina is below 50% of max.
+- Health, Stamina, Mana, Food, Drink, Sleep shown as current/max (percentage).
+- Only act on a stat if it is below 50% — do NOT treat 90% as low.
 - in_combat: true means actively fighting — survival first.
 - is_dead: true means you died — reflect briefly, then move on.
+- Body temperature below 10° is dangerously cold. Above 38° is dangerously hot.
 
-Available intents: explore, gather_food, eat, use_item, rest, interact, investigate, flee, trade, craft
+Survival priorities (only when below 50%):
+- Food low → intent: eat (if food in inventory) or gather_food (if not)
+- Drink low → intent: drink (consume a drink item from inventory)
+- Sleep low → intent: sleep (find a bed or campfire to rest at)
+- Health low + food available → intent: eat
+- Health low + no food → intent: rest or flee if in danger
 
-When to use eat/use_item:
-- Use "eat" when health or stamina is below 60% and food is available in inventory.
-- Use "use_item" for consumables and equipment actions.
-- Only rest if no food is available and stats are critically low.
+Available intents: explore, gather_food, eat, drink, sleep, use_item, rest, interact, investigate, flee, trade, craft
+
+When stats are healthy (all above 50%): freely explore, interact with the world, investigate things.
+Use interact when there is something in nearby_interactions worth triggering (door, NPC, chest, etc).
+Use investigate when there are nearby objects or characters worth approaching.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
 {
   "intent": "<action tag>",
   "reasoning": "<one sentence>",
   "direction": "<optional: north/south/east/west or null>",
-  "item": "<item name from inventory if intent is use_item/eat/equip, else null>",
+  "item": "<item name from inventory if intent is eat/drink/use_item/equip, else null>",
   "interaction_uid": "<uid from nearby_interactions if intent is interact, else null>",
   "chat": null
 }
@@ -177,6 +186,7 @@ class Orchestrator:
         self._nearby_interactions: list[dict] = []
         self._inventory: dict = {}
         self._screen_message: str = ""
+        self._known_skills: list[dict] = []  # Known skills from SkillKnowledge
 
         # Prevent concurrent strategy runs from stepping on each other
         self._strategy_lock = asyncio.Lock()
@@ -197,6 +207,7 @@ class Orchestrator:
         self._game.on("nav_failed", self._on_nav_failed)
         self._game.on("nav_update", self._on_nav_update)
         self._game.on("scan_result", self._on_scan_result)
+        self._game.on("skills", self._on_skills)
 
     async def run(self) -> None:
         """Start all loops concurrently."""
@@ -209,9 +220,10 @@ class Orchestrator:
     # ── Event handlers ──────────────────────────────────────────────────────
 
     async def _on_connected(self, _msg: dict) -> None:
-        """Sync autonomous mode flag and kick off vision-guided menu loading."""
+        """Sync autonomous mode flag and read initial skill list."""
         await self._game.set_autonomous(self._autonomous_movement)
         logger.info(f"Synced autonomous_movement={self._autonomous_movement} to mod")
+        await self._game.read_skills()
         # VisionAutoLoader disabled — manually load into game before starting agent.
         # Re-enable later using menu_query_state structured data (no vision needed).
         # if self._loader_task and not self._loader_task.done():
@@ -618,6 +630,12 @@ class Orchestrator:
         result.sort(key=lambda o: (0 if o.get("has_character") else 1, o.get("distance", 999)))
         return result
 
+    async def _on_skills(self, msg: dict) -> None:
+        skills = msg.get("skills", [])
+        self._known_skills = skills
+        names = [s.get("name", "?") for s in skills]
+        logger.info(f"[Skills] Received {len(skills)} known skills: {', '.join(names[:10])}")
+
     async def _on_scan_result(self, msg: dict) -> None:
         """Handle scan results from the mod — always log, only speak if player asked."""
         objects: list[dict] = msg.get("objects", [])
@@ -729,7 +747,8 @@ class Orchestrator:
                 cycle += 1
                 if cycle % 3 == 0:  # Background scan every ~90s
                     await self._game.scan_nearby(radius=40.0)
-                if cycle % 10 == 0:  # Save LLM usage every ~5 minutes
+                if cycle % 10 == 0:  # Read skills + save LLM usage every ~5 minutes
+                    await self._game.read_skills()
                     self._llm.save_usage()
             except Exception as e:
                 logger.error(f"Strategy loop error: {e}")
@@ -750,18 +769,29 @@ class Orchestrator:
 
         p = self._current_state.get("player", {})
         scene = self._current_state.get("scene", "unknown")
-        hp = p.get("health", 0)
-        max_hp = p.get("max_health", 100)
-        stam = p.get("stamina", 0)
-        max_stam = p.get("max_stamina", 100)
-        mana = p.get("mana", 0)
-        max_mana = p.get("max_mana", 0)
+
+        def pct(cur, mx): return f"{cur:.0f}/{mx:.0f} ({cur/max(1,mx)*100:.0f}%)"
+
+        hp,  max_hp   = p.get("health", 0),   p.get("max_health", 100)
+        stam,max_stam = p.get("stamina", 0),  p.get("max_stamina", 100)
+        mana,max_mana = p.get("mana", 0),     p.get("max_mana", 0)
+        food,max_food = p.get("food", 0),     p.get("max_food", 100)
+        drink,max_drk = p.get("drink", 0),    p.get("max_drink", 100)
+        slp, max_slp  = p.get("sleep", 0),    p.get("max_sleep", 100)
+        temp          = p.get("body_temperature", 20)
+        status_effects= p.get("status_effects", [])
+
         state_summary = (
             f"Scene: {scene}\n"
-            f"Health: {hp:.0f}/{max_hp:.0f} ({hp/max(1,max_hp)*100:.0f}%)\n"
-            f"Stamina: {stam:.0f}/{max_stam:.0f} ({stam/max(1,max_stam)*100:.0f}%)\n"
-            f"Mana: {mana:.0f}/{max_mana:.0f}\n"
-            f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"
+            f"Health:   {pct(hp,  max_hp)}\n"
+            f"Stamina:  {pct(stam,max_stam)}\n"
+            f"Mana:     {pct(mana,max_mana)}\n"
+            f"Food:     {pct(food,max_food)}\n"
+            f"Drink:    {pct(drink,max_drk)}\n"
+            f"Sleep:    {pct(slp, max_slp)}\n"
+            f"Temp:     {temp:.1f}°\n"
+            + (f"Status effects: {', '.join(status_effects)}\n" if status_effects else "")
+            + f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"
             f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
         )
         # Compact nearby objects summary
@@ -807,8 +837,14 @@ class Orchestrator:
 
         screen_msg_summary = f"\nScreen message: {self._screen_message}" if self._screen_message else ""
 
+        # Known skills summary
+        skills_summary = ""
+        if self._known_skills:
+            skill_names = [s.get("name", "?") for s in self._known_skills[:15]]
+            skills_summary = f"\nKnown skills/abilities: {', '.join(skill_names)}"
+
         user_msg = f"""Current state:
-{state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{screen_msg_summary}
+{state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{skills_summary}{screen_msg_summary}
 
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
@@ -898,6 +934,46 @@ Pending player messages: {self._pending_chat}"""
                     logger.info(f"[Use] Item '{item_name}' not found in pouch")
             else:
                 logger.info("[Use] No item specified in decision")
+        elif intent == "drink":
+            item_name = decision.get("item")
+            pouch = self._inventory.get("pouch", [])
+            # Look for a drink item: specified by LLM, or first non-food consumable that's drinkable
+            _DRINK_KEYWORDS = ("water", "drink", "juice", "tea", "ale", "wine", "brew", "flask", "potion")
+            if item_name:
+                target = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
+            else:
+                target = next(
+                    (i for i in pouch if any(k in i["name"].lower() for k in _DRINK_KEYWORDS)
+                     and not i.get("is_equipment")),
+                    None,
+                )
+            if target:
+                await self._game.use_item(target["name"])
+                logger.info(f"[Drink] Consuming {target['name']}")
+            else:
+                logger.info("[Drink] No drink item in pouch — will explore to find one")
+                await self._auto_explore(px, py, pz, decision.get("direction"))
+        elif intent == "sleep":
+            # Look for a bed/campfire in nearby interactions to rest at
+            sleep_keywords = ("bed", "bedroll", "campfire", "fire", "sleep", "inn", "rest")
+            rest_spot = next(
+                (i for i in self._nearby_interactions
+                 if any(k in i.get("label", "").lower() for k in sleep_keywords)),
+                None,
+            )
+            if rest_spot:
+                uid = rest_spot.get("uid", "")
+                logger.info(f"[Sleep] Triggering rest at {rest_spot.get('label')} (uid={uid})")
+                await self._game.trigger_interaction(uid)
+            elif self._nearby_interactions:
+                # Try nearest interaction — might be a campfire/bed
+                nearest = self._nearby_interactions[0]
+                logger.info(f"[Sleep] Trying nearest interaction: {nearest.get('label')}")
+                await self._game.trigger_interaction(nearest.get("uid", ""))
+            else:
+                # No rest spot visible — explore toward something
+                logger.info("[Sleep] No rest spot nearby — exploring to find one")
+                await self._auto_explore(px, py, pz, decision.get("direction"))
         elif intent == "interact":
             uid = decision.get("interaction_uid", "")
             if not uid and self._nearby_interactions:

@@ -60,28 +60,55 @@ public class GameStateReader
                 cameraRotY = cam.transform.eulerAngles.y;
 
             float health = 0, maxHealth = 0, stamina = 0, maxStamina = 0, mana = 0, maxMana = 0;
+            float food = 0, maxFood = 100, drink = 0, maxDrink = 100, sleep = 0, maxSleep = 100;
+            float bodyTemp = 20f;
 
             if (stats != null)
             {
-                health = stats.CurrentHealth;
+                health    = stats.CurrentHealth;
                 maxHealth = stats.MaxHealth;
-                stamina = stats.CurrentStamina;
-                maxStamina = stats.MaxStamina;
-                mana = stats.CurrentMana;
-                maxMana = stats.MaxMana;
+                stamina   = stats.CurrentStamina;
+                maxStamina= stats.MaxStamina;
+                mana      = stats.CurrentMana;
+                maxMana   = stats.MaxMana;
+
+                // Survival needs — Outward stores these as Stat objects
+                // Try each possible field name; catch silently if not found in this version
+                TryReadStat(stats, new[]{"m_foodNeeds","FoodNeeds","m_food","Food"}, ref food, ref maxFood);
+                TryReadStat(stats, new[]{"m_drinkNeeds","DrinkNeeds","m_drink","Drink"}, ref drink, ref maxDrink);
+                TryReadStat(stats, new[]{"m_sleepNeeds","SleepNeeds","m_sleep","Sleep"}, ref sleep, ref maxSleep);
+                bodyTemp = TryReadFloat(stats, new[]{"BodyTemperature","m_bodyTemperature","Temperature"});
             }
+
+            // Active status effects (burning, bleeding, poisoned, etc.)
+            var statusEffects = new List<string>();
+            try
+            {
+                var mgr = character.StatusEffectMngr;
+                if (mgr?.Statuses != null)
+                {
+                    foreach (var effect in mgr.Statuses)
+                    {
+                        if (effect == null) continue;
+                        string name = effect.IdentifierName ?? effect.name ?? "";
+                        if (!string.IsNullOrWhiteSpace(name))
+                            statusEffects.Add(name);
+                    }
+                }
+            }
+            catch { /* status effect read failed — skip */ }
 
             return new PlayerState
             {
-                Health = health,
-                MaxHealth = maxHealth,
-                Stamina = stamina,
-                MaxStamina = maxStamina,
-                Mana = mana,
-                MaxMana = maxMana,
-                PositionX = pos.x,
-                PositionY = pos.y,
-                PositionZ = pos.z,
+                Health      = health,    MaxHealth   = maxHealth,
+                Stamina     = stamina,   MaxStamina  = maxStamina,
+                Mana        = mana,      MaxMana     = maxMana,
+                Food        = food,      MaxFood     = maxFood,
+                Drink       = drink,     MaxDrink    = maxDrink,
+                Sleep       = sleep,     MaxSleep    = maxSleep,
+                BodyTemperature = bodyTemp,
+                StatusEffects = statusEffects,
+                PositionX = pos.x, PositionY = pos.y, PositionZ = pos.z,
                 RotationY = rot.y,
                 CameraRotationY = cameraRotY,
                 IsDead = character.IsDead,
@@ -93,6 +120,76 @@ public class GameStateReader
             Plugin.Log.LogWarning($"GameStateReader error: {ex.Message}");
             return new PlayerState();
         }
+    }
+
+    // ── Survival stat helpers ────────────────────────────────────────────────
+
+    /// <summary>
+    /// Try to read a Stat object (CurrentValue/MaxValue) from CharacterStats by field name.
+    /// Outward's Stat class wraps survival needs; tries multiple possible names.
+    /// </summary>
+    private static void TryReadStat(CharacterStats stats, string[] names,
+        ref float current, ref float max)
+    {
+        try
+        {
+            var statsType = stats.GetIl2CppType();
+            foreach (var name in names)
+            {
+                var field = statsType.GetField(name,
+                    Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                if (field == null) continue;
+
+                var val = field.GetValue(stats);
+                if (val == null) continue;
+
+                var statType = val.GetIl2CppType();
+                var curProp = statType.GetProperty("CurrentValue",
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                var maxProp = statType.GetProperty("MaxValue",
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+
+                if (curProp != null) { var r = curProp.GetValue(val, null); if (r != null) current = Il2CppUnbox<float>(r); }
+                if (maxProp != null) { var r = maxProp.GetValue(val, null); if (r != null) max     = Il2CppUnbox<float>(r); }
+                return;
+            }
+        }
+        catch { /* field not found in this version — leave defaults */ }
+    }
+
+    /// <summary>Try to read a plain float field from CharacterStats by multiple possible names.</summary>
+    private static float TryReadFloat(CharacterStats stats, string[] names)
+    {
+        try
+        {
+            var statsType = stats.GetIl2CppType();
+            foreach (var name in names)
+            {
+                var prop = statsType.GetProperty(name,
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                if (prop != null)
+                {
+                    var val = prop.GetValue(stats, null);
+                    if (val != null) return Il2CppUnbox<float>(val);
+                }
+                var field = statsType.GetField(name,
+                    Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                if (field != null)
+                {
+                    var val = field.GetValue(stats);
+                    if (val != null) return Il2CppUnbox<float>(val);
+                }
+            }
+        }
+        catch { }
+        return 20f; // default comfortable temperature
     }
 
     private const float ScanRadius = 100f;
@@ -309,6 +406,25 @@ public class GameStateReader
         }
     }
 
+    /// <summary>
+    /// Unbox an Il2CppSystem.Object returned by reflection to a value type T.
+    /// Strategy: try float.Parse on ToString() with InvariantCulture — reliable across types.
+    /// </summary>
+    private static T Il2CppUnbox<T>(Il2CppSystem.Object obj) where T : struct
+    {
+        try
+        {
+            string s = obj.ToString() ?? "0";
+            if (typeof(T) == typeof(float))
+                return (T)(object)float.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
+            return (T)System.Convert.ChangeType(s, typeof(T), System.Globalization.CultureInfo.InvariantCulture);
+        }
+        catch
+        {
+            return default;
+        }
+    }
+
     // ── Screen message ───────────────────────────────────────────────────────
 
     private static string GetScreenMessage()
@@ -348,19 +464,27 @@ public class NearbyDeadEntry
 
 public class PlayerState
 {
-    [JsonPropertyName("health")] public float Health { get; init; }
-    [JsonPropertyName("max_health")] public float MaxHealth { get; init; }
-    [JsonPropertyName("stamina")] public float Stamina { get; init; }
-    [JsonPropertyName("max_stamina")] public float MaxStamina { get; init; }
-    [JsonPropertyName("mana")] public float Mana { get; init; }
-    [JsonPropertyName("max_mana")] public float MaxMana { get; init; }
-    [JsonPropertyName("pos_x")] public float PositionX { get; init; }
-    [JsonPropertyName("pos_y")] public float PositionY { get; init; }
-    [JsonPropertyName("pos_z")] public float PositionZ { get; init; }
-    [JsonPropertyName("rotation_y")] public float RotationY { get; init; }
-    [JsonPropertyName("camera_rotation_y")] public float CameraRotationY { get; init; }
-    [JsonPropertyName("is_dead")] public bool IsDead { get; init; }
-    [JsonPropertyName("in_combat")] public bool IsInCombat { get; init; }
+    [JsonPropertyName("health")]           public float Health          { get; init; }
+    [JsonPropertyName("max_health")]       public float MaxHealth       { get; init; }
+    [JsonPropertyName("stamina")]          public float Stamina         { get; init; }
+    [JsonPropertyName("max_stamina")]      public float MaxStamina      { get; init; }
+    [JsonPropertyName("mana")]             public float Mana            { get; init; }
+    [JsonPropertyName("max_mana")]         public float MaxMana         { get; init; }
+    [JsonPropertyName("food")]             public float Food            { get; init; }
+    [JsonPropertyName("max_food")]         public float MaxFood         { get; init; }
+    [JsonPropertyName("drink")]            public float Drink           { get; init; }
+    [JsonPropertyName("max_drink")]        public float MaxDrink        { get; init; }
+    [JsonPropertyName("sleep")]            public float Sleep           { get; init; }
+    [JsonPropertyName("max_sleep")]        public float MaxSleep        { get; init; }
+    [JsonPropertyName("body_temperature")] public float BodyTemperature { get; init; }
+    [JsonPropertyName("status_effects")]   public List<string> StatusEffects { get; init; } = new();
+    [JsonPropertyName("pos_x")]            public float PositionX       { get; init; }
+    [JsonPropertyName("pos_y")]            public float PositionY       { get; init; }
+    [JsonPropertyName("pos_z")]            public float PositionZ       { get; init; }
+    [JsonPropertyName("rotation_y")]       public float RotationY       { get; init; }
+    [JsonPropertyName("camera_rotation_y")]public float CameraRotationY { get; init; }
+    [JsonPropertyName("is_dead")]          public bool  IsDead          { get; init; }
+    [JsonPropertyName("in_combat")]        public bool  IsInCombat      { get; init; }
 }
 
 public class NearbyInteractionEntry

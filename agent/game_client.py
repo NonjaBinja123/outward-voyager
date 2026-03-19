@@ -102,3 +102,6 @@ class GameClient:
 
     async def equip_item(self, name: str) -> None:
         await self.send("equip_item", {"name": name})
+
+    async def read_skills(self) -> None:
+        await self.send("read_skills")

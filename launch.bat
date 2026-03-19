@@ -39,7 +39,7 @@ REM Launching the exe directly caused InitAPI() to fail on first launch because
 REM the Steam API wasn't ready. Using steam:// lets Steam own the launch so the
 REM API is initialized before the game process starts.
 echo [3/5] Launching Outward Definitive Edition via Steam...
-start "" "steam://rungameid/1291450"
+start "" "steam://rungameid/794260"
 
 REM ── Step 4: Wait for game WebSocket to come up, then start agent
 echo [4/5] Starting agent (will retry until game is ready)...

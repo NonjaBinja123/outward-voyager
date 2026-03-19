@@ -99,3 +99,8 @@ goals:
 logging:
   level: INFO
   file: ./logs/voyager.log
+
+# Phase 9 — cross-game portability
+game:
+  game_id: outward_definitive           # Used for skill scoping + ChromaDB provenance
+  game_display_name: "Outward Definitive Edition"

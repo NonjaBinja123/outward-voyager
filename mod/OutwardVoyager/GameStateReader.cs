@@ -72,12 +72,15 @@ public class GameStateReader
                 mana      = stats.CurrentMana;
                 maxMana   = stats.MaxMana;
 
+                // Dump all field names on first read so we can see what's available
+                DumpStatFieldsOnce(stats);
+
                 // Survival needs — Outward stores these as Stat objects
-                // Try each possible field name; catch silently if not found in this version
-                TryReadStat(stats, new[]{"m_foodNeeds","FoodNeeds","m_food","Food"}, ref food, ref maxFood);
-                TryReadStat(stats, new[]{"m_drinkNeeds","DrinkNeeds","m_drink","Drink"}, ref drink, ref maxDrink);
-                TryReadStat(stats, new[]{"m_sleepNeeds","SleepNeeds","m_sleep","Sleep"}, ref sleep, ref maxSleep);
-                bodyTemp = TryReadFloat(stats, new[]{"BodyTemperature","m_bodyTemperature","Temperature"});
+                // "water" is the internal name for drink needs in Outward
+                TryReadStat(stats, new[]{"m_foodNeeds","FoodNeeds","m_food","Food","m_hunger","Hunger"}, ref food, ref maxFood);
+                TryReadStat(stats, new[]{"m_waterNeeds","WaterNeeds","m_drinkNeeds","DrinkNeeds","m_water","Water","m_drink","Drink","m_thirst","Thirst"}, ref drink, ref maxDrink);
+                TryReadStat(stats, new[]{"m_sleepNeeds","SleepNeeds","m_sleep","Sleep","m_fatigue","Fatigue"}, ref sleep, ref maxSleep);
+                bodyTemp = TryReadFloat(stats, new[]{"BodyTemperature","m_bodyTemperature","Temperature","m_temperature"});
             }
 
             // Active status effects (burning, bleeding, poisoned, etc.)
@@ -128,6 +131,26 @@ public class GameStateReader
     /// Try to read a Stat object (CurrentValue/MaxValue) from CharacterStats by field name.
     /// Outward's Stat class wraps survival needs; tries multiple possible names.
     /// </summary>
+    // One-time field dump — logs all CharacterStats field names so we can find survival stat fields
+    private static bool _statFieldsDumped = false;
+    private static void DumpStatFieldsOnce(CharacterStats stats)
+    {
+        if (_statFieldsDumped) return;
+        _statFieldsDumped = true;
+        try
+        {
+            var statsType = stats.GetIl2CppType();
+            var fields = statsType.GetFields(
+                Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                Il2CppSystem.Reflection.BindingFlags.Public |
+                Il2CppSystem.Reflection.BindingFlags.Instance);
+            Plugin.Log.LogInfo($"[StatsDump] CharacterStats has {fields.Count} fields:");
+            foreach (var f in fields)
+                Plugin.Log.LogInfo($"  Field: {f.FieldType?.Name ?? "?"} {f.Name}");
+        }
+        catch (Exception ex) { Plugin.Log.LogWarning($"[StatsDump] failed: {ex.Message}"); }
+    }
+
     private static void TryReadStat(CharacterStats stats, string[] names,
         ref float current, ref float max)
     {
@@ -146,15 +169,32 @@ public class GameStateReader
                 if (val == null) continue;
 
                 var statType = val.GetIl2CppType();
-                var curProp = statType.GetProperty("CurrentValue",
-                    Il2CppSystem.Reflection.BindingFlags.Public |
-                    Il2CppSystem.Reflection.BindingFlags.Instance);
-                var maxProp = statType.GetProperty("MaxValue",
-                    Il2CppSystem.Reflection.BindingFlags.Public |
-                    Il2CppSystem.Reflection.BindingFlags.Instance);
-
-                if (curProp != null) { var r = curProp.GetValue(val, null); if (r != null) current = Il2CppUnbox<float>(r); }
-                if (maxProp != null) { var r = maxProp.GetValue(val, null); if (r != null) max     = Il2CppUnbox<float>(r); }
+                // Try both CamelCase and m_camelCase property names
+                foreach (var curName in new[] { "CurrentValue", "m_currentValue", "Value", "m_value" })
+                {
+                    var curProp = statType.GetProperty(curName,
+                        Il2CppSystem.Reflection.BindingFlags.Public |
+                        Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                        Il2CppSystem.Reflection.BindingFlags.Instance);
+                    if (curProp != null)
+                    {
+                        var r = curProp.GetValue(val, null);
+                        if (r != null) { current = Il2CppUnbox<float>(r); break; }
+                    }
+                }
+                foreach (var maxName in new[] { "MaxValue", "m_maxValue", "Max", "m_max" })
+                {
+                    var maxProp = statType.GetProperty(maxName,
+                        Il2CppSystem.Reflection.BindingFlags.Public |
+                        Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                        Il2CppSystem.Reflection.BindingFlags.Instance);
+                    if (maxProp != null)
+                    {
+                        var r = maxProp.GetValue(val, null);
+                        if (r != null) { max = Il2CppUnbox<float>(r); break; }
+                    }
+                }
+                Plugin.Log.LogInfo($"[Stat] {name} → current={current} max={max}");
                 return;
             }
         }

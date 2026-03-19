@@ -108,3 +108,9 @@ class GameClient:
 
     async def face_point(self, x: float, y: float, z: float) -> None:
         await self.send("face_point", {"x": x, "y": y, "z": z})
+
+    async def open_menu(self, menu: str) -> None:
+        await self.send("open_menu", {"menu": menu})
+
+    async def close_menu(self) -> None:
+        await self.send("close_menu")

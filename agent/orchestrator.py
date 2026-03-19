@@ -103,9 +103,12 @@ What you can do:
 - Equip and unequip gear
 - Speak in chat
 - Read your known skills and abilities
+- Open game menus: inventory, skills, equipment, map, quest journal
 
-What you cannot do yet: attack, cast spells in combat, crouch, open menus manually.
+What you cannot do yet: attack, cast spells in combat, crouch.
 If asked to do something outside these capabilities, be honest about it.
+
+Note: "MainMenu_Empty" is the internal name for the lighthouse/starting area. The game IS loaded.
 
 Speak in first person. Keep replies short — 1-2 sentences. Do not invent values
 for health, position, or inventory — use only what the game state actually shows.
@@ -117,25 +120,31 @@ You are accumulating experiences and forming your own understanding of this worl
 
 Given the current game state and your goals, decide what to do next.
 
+IMPORTANT — scene names: Outward uses internal Unity scene names that don't describe content.
+"MainMenu_Empty" is the lighthouse/starting area — the game IS fully loaded and playable.
+Never assume the game isn't loaded based on scene name alone. If health > 0, you are in-game.
+
 Understanding the stats:
 - Health, Stamina, Mana, Food, Drink, Sleep shown as current/max (percentage).
 - Only act on a stat if it is below 50% — do NOT treat 90% as low.
 - in_combat: true means actively fighting — survival first.
 - is_dead: true means you died — reflect briefly, then move on.
-- Body temperature below 10° is dangerously cold. Above 38° is dangerously hot.
 
 Survival priorities (only when below 50%):
-- Food low → intent: eat (if food in inventory) or gather_food (if not)
-- Drink low → intent: drink (consume a drink item from inventory)
-- Sleep low → intent: sleep (find a bed or campfire to rest at)
+- Food low → intent: eat (if food in inventory) or gather_food
+- Drink low → intent: drink (consume water/drink item from inventory)
+- Sleep low → intent: sleep (find a bed or campfire)
 - Health low + food available → intent: eat
-- Health low + no food → intent: rest or flee if in danger
+- Health low + no food → intent: rest or flee
 
-Available intents: explore, gather_food, eat, drink, sleep, use_item, rest, interact, investigate, flee, trade, craft
+Available intents: explore, gather_food, eat, drink, sleep, use_item, rest, interact,
+                   investigate, open_menu, flee, trade, craft
 
-When stats are healthy (all above 50%): freely explore, interact with the world, investigate things.
-Use interact when there is something in nearby_interactions worth triggering (door, NPC, chest, etc).
+Use open_menu when: player asks to open a menu, or you want to read your skills/equipment.
+  menu values: "inventory", "skills", "map", "equipment", "quest"
+Use interact when there is something in nearby_interactions worth triggering.
 Use investigate when there are nearby objects or characters worth approaching.
+When stats are healthy (all above 50%): freely explore and interact with the world.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
 {
@@ -144,6 +153,7 @@ Respond with ONLY a JSON object (no markdown, no extra text):
   "direction": "<optional: north/south/east/west or null>",
   "item": "<item name from inventory if intent is eat/drink/use_item/equip, else null>",
   "interaction_uid": "<uid from nearby_interactions if intent is interact, else null>",
+  "menu": "<menu name if intent is open_menu, else null>",
   "chat": null
 }
 Be specific — use actual game state data. Explore freely when stats are healthy."""
@@ -1055,6 +1065,11 @@ Pending player messages: {self._pending_chat}"""
             else:
                 await self._game.say("Scanning the area.")
                 await self._game.scan_nearby(radius=40.0)
+        elif intent == "open_menu":
+            menu = decision.get("menu", "inventory")
+            await self._game.say(f"Opening {menu}.")
+            await self._game.open_menu(menu)
+            logger.info(f"[Menu] Opening {menu}")
         elif intent == "flee":
             angle = random.uniform(0, 2 * math.pi)
             tx = px + math.sin(angle) * 30.0

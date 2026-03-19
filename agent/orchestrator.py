@@ -379,6 +379,37 @@ class Orchestrator:
             await self._respond_to_chat(message, "Josh")
             asyncio.create_task(self._run_strategy())
 
+    async def _poll_override_command(self) -> None:
+        """
+        Check for a manual override command written by the dashboard (/api/override).
+        Executes the command immediately, bypassing the strategy loop.
+        File: data/pending_override.json
+        """
+        override_path = Path("./data/pending_override.json")
+        if not override_path.exists():
+            return
+        try:
+            text = override_path.read_text(encoding="utf-8").strip()
+            if not text:
+                return
+            cmd = json.loads(text)
+            # Clear immediately to prevent re-execution
+            override_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"[Override] Failed to read: {e}")
+            return
+
+        action = cmd.get("action", "")
+        params = cmd.get("params", {})
+        if not action:
+            return
+
+        logger.info(f"[Override] Executing forced command: {action} {params}")
+        try:
+            await self._game.send(action, params)
+        except Exception as e:
+            logger.warning(f"[Override] Failed to send {action}: {e}")
+
     async def _on_chat(self, msg: dict) -> None:
         message = msg.get("message", "")
         player = msg.get("player", "")
@@ -1370,6 +1401,7 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
             await asyncio.sleep(self._rule_interval)
             try:
                 await self._poll_dashboard_chat()
+                await self._poll_override_command()
                 # In combat: pause non-combat skills and let the agent react
                 if self._current_state.get("player", {}).get("in_combat", False):
                     await self._handle_in_combat()

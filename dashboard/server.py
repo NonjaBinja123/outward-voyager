@@ -309,6 +309,22 @@ def link_identities(body: IdentityLinkRequest) -> JSONResponse:
     return JSONResponse(asdict(merged))
 
 
+class OverrideCommand(BaseModel):
+    action: str
+    params: dict = {}
+
+
+@app.post("/api/override")
+def post_override(body: OverrideCommand) -> JSONResponse:
+    """Write a force command to the pending override file. The agent picks it up next rule cycle."""
+    if not body.action:
+        raise HTTPException(status_code=400, detail="action required")
+    override_path = DATA_DIR / "pending_override.json"
+    command = {"action": body.action, "params": body.params, "timestamp": time.time()}
+    override_path.write_text(json.dumps(command), encoding="utf-8")
+    return JSONResponse({"ok": True, "command": command})
+
+
 @app.get("/api/tunnel")
 def get_tunnel_url() -> JSONResponse:
     """Public tunnel URL if cloudflared is running."""
@@ -439,7 +455,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v13</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v14</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">
@@ -534,6 +550,37 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card" id="card-keybindings">
     <h2>Learned Keybindings</h2>
     <div id="keybindings-body">Loading...</div>
+  </div>
+  <div class="card" id="card-override" style="background:#1a120f;border-color:#6b3015">
+    <h2 style="color:#f0883e">Manual Override</h2>
+    <p style="font-size:0.78rem;color:#8b949e;margin-bottom:10px">
+      Force the agent to execute an action. Use only when stuck. Agent retains autonomy afterward.
+    </p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div style="display:flex;gap:6px">
+        <select id="override-action" style="flex:1;background:#21262d;border:1px solid #30363d;border-radius:4px;padding:4px 8px;color:#e6edf3;font-size:0.82rem">
+          <option value="">-- select action --</option>
+          <option value="say">say (chat message)</option>
+          <option value="navigate_to">navigate_to (x,z)</option>
+          <option value="use_item">use_item (name)</option>
+          <option value="scan_nearby">scan_nearby</option>
+          <option value="get_state">get_state</option>
+          <option value="read_skills">read_skills</option>
+          <option value="open_menu">open_menu (inventory/skills/map)</option>
+        </select>
+      </div>
+      <input id="override-params" type="text" placeholder='params (JSON or plain text, e.g. {"message":"hi"} or seaweed)'
+        style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:6px 10px;color:#e6edf3;font-size:0.82rem;font-family:monospace">
+      <button onclick="sendOverride()"
+        style="background:#6b3015;border:none;border-radius:4px;padding:6px 14px;color:#f0883e;cursor:pointer;font-size:0.85rem;font-weight:600">
+        Force Execute
+      </button>
+      <div id="override-result" style="font-size:0.78rem;color:#8b949e;min-height:20px"></div>
+    </div>
+  </div>
+  <div class="card" id="card-identity">
+    <h2>Known Players</h2>
+    <div id="identity-body">Loading...</div>
   </div>
 </main>
 <script>
@@ -953,6 +1000,61 @@ async function refreshKeybindings() {
     }).join('') + '</tbody></table>';
 }
 
+async function sendOverride() {
+  const action = document.getElementById('override-action').value;
+  const paramsRaw = document.getElementById('override-params').value.trim();
+  const resultEl = document.getElementById('override-result');
+  if (!action) { resultEl.textContent = 'Select an action first.'; return; }
+  let params = {};
+  if (paramsRaw) {
+    try {
+      params = JSON.parse(paramsRaw);
+    } catch {
+      // Guess intent: if action is "say" treat as message, if "navigate_to" parse x,z
+      if (action === 'say') params = { message: paramsRaw };
+      else if (action === 'use_item') params = { name: paramsRaw };
+      else if (action === 'open_menu') params = { menu: paramsRaw };
+      else if (action === 'navigate_to') {
+        var parts = paramsRaw.split(',').map(Number);
+        if (parts.length >= 2) params = { x: parts[0], z: parts[1] };
+      }
+      else params = { value: paramsRaw };
+    }
+  }
+  resultEl.style.color = '#8b949e';
+  resultEl.textContent = 'Sending...';
+  try {
+    const resp = await fetch('/api/override', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, params })
+    });
+    const data = await resp.json();
+    if (data.ok) {
+      resultEl.style.color = '#238636';
+      resultEl.textContent = 'Sent: ' + action + ' ' + JSON.stringify(params);
+    } else {
+      resultEl.style.color = '#f85149';
+      resultEl.textContent = 'Error: ' + JSON.stringify(data);
+    }
+  } catch(e) {
+    resultEl.style.color = '#f85149';
+    resultEl.textContent = 'Request failed: ' + String(e);
+  }
+}
+
+async function refreshIdentity() {
+  const data = await fetchJSON('/api/identity');
+  const el = document.getElementById('identity-body');
+  if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No known players</span>'; return; }
+  el.innerHTML = '<table><thead><tr><th>Name</th><th>Seen</th><th>In-game</th></tr></thead><tbody>' +
+    data.map(u => {
+      const names = (u.in_game_names || []).join(', ') || '—';
+      const seen = _relTime(u.last_seen);
+      return `<tr><td>${u.display_name || '—'}</td><td>${seen}</td><td>${names}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+
 function _relTime(ts) {
   if (!ts) return 'unknown';
   var delta = Math.floor(Date.now()/1000 - ts);
@@ -980,7 +1082,9 @@ var _DEFAULT_LAYOUT = {
   'card-novelty':        {left:20,   top:980,  width:440, height:280},
   'card-relationships':  {left:480,  top:980,  width:440, height:280},
   'card-social':         {left:940,  top:980,  width:440, height:340},
-  'card-keybindings':    {left:1400, top:980,  width:340, height:340}
+  'card-keybindings':    {left:1400, top:980,  width:340, height:340},
+  'card-override':       {left:20,   top:1340, width:440, height:300},
+  'card-identity':       {left:480,  top:1340, width:440, height:260}
 };
 
 function _saveLayout() {
@@ -1036,7 +1140,8 @@ async function refreshAll() {
   await Promise.all([
     refreshDiag(), refreshChat(), refreshLog(), refreshAgentLog(), refreshPrefs(), refreshCombat(),
     refreshMap(), refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
-    refreshGameState(), refreshLLMUsage(), refreshRelationships(), refreshSocial(), refreshKeybindings()
+    refreshGameState(), refreshLLMUsage(), refreshRelationships(), refreshSocial(), refreshKeybindings(),
+    refreshIdentity()
   ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }

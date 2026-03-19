@@ -282,11 +282,9 @@ class Orchestrator:
                 continue
             if await self._try_stop(message):
                 continue
-            if await self._try_move(message):
-                continue
-            if await self._try_wander(message):
-                continue
+            self._pending_chat.append({"message": message, "player": "Josh"})
             await self._respond_to_chat(message, "Josh")
+            asyncio.create_task(self._run_strategy())
 
     async def _on_chat(self, msg: dict) -> None:
         message = msg.get("message", "")
@@ -294,7 +292,7 @@ class Orchestrator:
         self._log_chat("player", message, name=player)
         logger.info(f"Chat from {player}: {message}")
 
-        # Handle commands immediately — no need to wait for strategy loop
+        # Only intercept unambiguous immediate commands
         if await self._try_nav_to_dead(message):
             return
         if await self._try_look_around(message):
@@ -305,14 +303,12 @@ class Orchestrator:
             return
         if await self._try_stop(message):
             return
-        if await self._try_move(message):
-            return
-        if await self._try_wander(message):
-            return
 
-        # Respond to all other chat via LLM immediately
+        # Everything else: reply conversationally, then let strategy loop
+        # interpret intent and plan actual actions immediately
         self._pending_chat.append(msg)
         await self._respond_to_chat(message, player)
+        asyncio.create_task(self._run_strategy())
 
     def _recent_chat_context(self, limit: int = 6) -> str:
         """Read the last few chat entries for conversational context."""

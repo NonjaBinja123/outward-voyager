@@ -17,15 +17,16 @@ public class NavigationController : MonoBehaviour
     private Vector3? _target;
     private bool _run;
 
-    private Vector3 _lastPos;
-    private float _stuckTime;
-    private float _navStartTime;
-
     private const float ArrivalDistance = 2.5f;
     private const float NavUpdateInterval = 3.0f;
-    private const float StuckTimeLimit = 2.0f;
-    private const float StuckMoveThreshold = 0.1f;
-    private const float StuckGracePeriod = 0.5f;  // ignore stuck check for first 0.5s after SetTarget
+
+    // Progress-based stuck detection: if distance to target hasn't decreased by
+    // at least ProgressMinimum units over ProgressCheckInterval seconds → stuck.
+    // This catches wall-sliding (character moves but isn't getting closer).
+    private const float ProgressCheckInterval = 3.0f;
+    private const float ProgressMinimum = 0.5f;
+    private float _lastProgressCheckTime;
+    private float _distAtLastProgressCheck;
 
     private float _lastUpdateTime;
 
@@ -35,11 +36,11 @@ public class NavigationController : MonoBehaviour
     {
         _target = target;
         _run = run;
-        _stuckTime = 0f;
-        _navStartTime = Time.time;
+        _lastProgressCheckTime = Time.time;
 
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
-        _lastPos = character?.transform.position ?? Vector3.zero;
+        var pos = character?.transform.position ?? Vector3.zero;
+        _distAtLastProgressCheck = Vector3.Distance(pos, target);
 
         InputInjector.IsNavigating = true;
         Plugin.Log.LogInfo($"[Nav] Target set: ({target.x:F1},{target.y:F1},{target.z:F1}) run={run}");
@@ -80,24 +81,22 @@ public class NavigationController : MonoBehaviour
             return;
         }
 
-        // Stuck detection — skip for the first grace period after SetTarget
-        float moved = Vector3.Distance(pos, _lastPos) / Time.deltaTime;
-        if (Time.time - _navStartTime > StuckGracePeriod && moved < StuckMoveThreshold)
+        // Progress-based stuck detection: check every ProgressCheckInterval seconds
+        // whether the distance to target has actually decreased. This catches wall-sliding
+        // where the character moves but isn't making progress toward the goal.
+        if (Time.time - _lastProgressCheckTime >= ProgressCheckInterval)
         {
-            _stuckTime += Time.deltaTime;
-            if (_stuckTime >= StuckTimeLimit)
+            float progress = _distAtLastProgressCheck - dist;
+            if (progress < ProgressMinimum)
             {
-                Plugin.Log.LogInfo("[Nav] Stuck — obstacle detected. Cancelling.");
+                Plugin.Log.LogInfo($"[Nav] Stuck — no progress toward target (moved {progress:F2}u in {ProgressCheckInterval}s). Cancelling.");
                 StopNav();
                 _ = Plugin.WsServer!.SendAsync(new { type = "nav_failed", reason = "stuck" });
                 return;
             }
+            _lastProgressCheckTime = Time.time;
+            _distAtLastProgressCheck = dist;
         }
-        else
-        {
-            _stuckTime = 0f;
-        }
-        _lastPos = pos;
 
         // Compute camera-relative input
         // Camera forward/right projected onto XZ plane

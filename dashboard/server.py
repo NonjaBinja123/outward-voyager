@@ -16,13 +16,31 @@ import time
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+import os
+
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 app = FastAPI(title="Outward Voyager Dashboard")
 
 DATA_DIR = Path(__file__).parent.parent / "agent" / "data"
+
+# Optional shared-secret auth. Set VOYAGER_DASHBOARD_SECRET env var to enable.
+# If empty/unset, auth is disabled (safe for local-only use).
+_AUTH_SECRET: str = os.environ.get("VOYAGER_DASHBOARD_SECRET", "").strip()
+
+
+def _check_auth(request: Request) -> None:
+    """Raise 401 if auth is enabled and request doesn't have the right secret."""
+    if not _AUTH_SECRET:
+        return  # auth disabled
+    token = (
+        request.headers.get("X-Voyager-Secret", "")
+        or request.query_params.get("secret", "")
+    )
+    if token != _AUTH_SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
 
 
 def _read_json(path: Path, default: Any = None) -> Any:
@@ -421,7 +439,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v12</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v13</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">
@@ -1040,5 +1058,6 @@ setInterval(refreshGameState, 5000);  // game state every 5s
 
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard() -> HTMLResponse:
+def dashboard(request: Request) -> HTMLResponse:
+    _check_auth(request)
     return HTMLResponse(_HTML, headers={"Cache-Control": "no-store"})

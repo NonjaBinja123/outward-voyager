@@ -104,3 +104,14 @@ logging:
 game:
   game_id: outward_definitive           # Used for skill scoping + ChromaDB provenance
   game_display_name: "Outward Definitive Edition"
+
+# Phase 7 — Observation dashboard
+dashboard:
+  port: 7770
+  # Shared secret for dashboard access. Leave empty to disable auth (local-only).
+  # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
+  auth_secret: ""
+  # Set to true to expose dashboard publicly via cloudflared (requires cloudflared in PATH)
+  enable_public_sharing: false
+  # Optional: persistent Cloudflare tunnel token (from cloudflared login)
+  cloudflare_tunnel_token: ""

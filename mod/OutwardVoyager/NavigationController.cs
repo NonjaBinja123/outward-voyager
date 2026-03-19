@@ -50,7 +50,6 @@ public class NavigationController : MonoBehaviour
     {
         if (!_target.HasValue) return;
         _target = null;
-        _stuckTime = 0f;
         InputInjector.IsNavigating = false;
         InputInjector.InjectedVertical = 0f;
         InputInjector.InjectedHorizontal = 0f;
@@ -139,7 +138,6 @@ public class NavigationController : MonoBehaviour
     private void StopNav()
     {
         _target = null;
-        _stuckTime = 0f;
         InputInjector.IsNavigating = false;
         InputInjector.InjectedVertical = 0f;
         InputInjector.InjectedHorizontal = 0f;

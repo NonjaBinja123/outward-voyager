@@ -167,6 +167,12 @@ class Orchestrator:
         self._game_state_path = Path("./data/game_state.json")
         self._scan_for_player: bool = False  # True only when player explicitly asked to look
         self._nearby_objects: list[dict] = []  # Last scan results (filtered)
+
+        # Navigation state tracking — lets agent know if it's actually moving
+        self._is_navigating: bool = False
+        self._nav_pos_snapshot: tuple[float, float] = (0.0, 0.0)  # (x, z) at last check
+        self._nav_snapshot_time: float = 0.0
+        self._nav_check_interval: float = 5.0  # seconds between position checks
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Wire up game event handlers
@@ -222,6 +228,24 @@ class Orchestrator:
 
         # Feed state into reward engine — tracks novelty, preferences, survival
         self._reward.process(msg)
+
+        # Navigation self-check: if we're supposed to be moving but position hasn't
+        # changed in _nav_check_interval seconds, navigation silently failed
+        if self._is_navigating:
+            px = float(player.get("pos_x", 0))
+            pz = float(player.get("pos_z", 0))
+            now = time.time()
+            if now - self._nav_snapshot_time >= self._nav_check_interval:
+                sx, sz = self._nav_pos_snapshot
+                dist_moved = math.sqrt((px - sx) ** 2 + (pz - sz) ** 2)
+                if dist_moved < 0.5:
+                    logger.warning("[Nav] Position unchanged — navigation not working, re-planning")
+                    self._is_navigating = False
+                    asyncio.create_task(self._run_strategy())
+                else:
+                    # Still moving — update snapshot for next check
+                    self._nav_pos_snapshot = (px, pz)
+                    self._nav_snapshot_time = now
 
         # Track combat transitions for combat learning
         was_in_combat = prev_state.get("player", {}).get("in_combat", False)
@@ -369,7 +393,7 @@ class Orchestrator:
             return True
 
         target = nearby_dead[0]  # closest
-        await self._game.navigate_to(target["x"], target["y"], target["z"], run=run)
+        await self._navigate_to(target["x"], target["y"], target["z"], run=run)
 
         action = "Running" if run else "Walking"
         dist = round(target.get("distance", 0))
@@ -488,7 +512,7 @@ class Orchestrator:
             dx, dz = relative_offsets.get(direction, (fwd_x * _MOVE_STEP, fwd_z * _MOVE_STEP))
         tx, tz = px + dx, pz + dz
 
-        await self._game.navigate_to(tx, py, tz, run=run)
+        await self._navigate_to(tx, py, tz, run=run)
         verb = "Running" if run else "Moving"
         reply = f"{verb} {direction}."
         await self._game.say(reply)
@@ -520,7 +544,7 @@ class Orchestrator:
         tx, tz = px + dx, pz + dz
 
         run = bool(_RUN_RE.search(message))
-        await self._game.navigate_to(tx, py, tz, run=run)
+        await self._navigate_to(tx, py, tz, run=run)
         verb = "Running" if run else "Moving"
         reply = f"{verb} {direction}."
         await self._game.say(reply)
@@ -629,17 +653,26 @@ class Orchestrator:
             await self._game.say(reply)
             self._log_chat("voyager", reply)
 
+    async def _navigate_to(self, x: float, y: float, z: float, run: bool = False) -> None:
+        """Wrapper around game_client.navigate_to that tracks navigation state."""
+        player = self._current_state.get("player", {})
+        px = float(player.get("pos_x", 0))
+        pz = float(player.get("pos_z", 0))
+        self._is_navigating = True
+        self._nav_pos_snapshot = (px, pz)
+        self._nav_snapshot_time = time.time()
+        await self._game.navigate_to(x, y, z, run=run)
+
     async def _on_nav_arrived(self, msg: dict) -> None:
         logger.info("[Nav] Arrived at destination.")
-        await self._game.say("I've arrived.")
-        self._log_chat("voyager", "I've arrived.")
+        self._is_navigating = False
+        asyncio.create_task(self._run_strategy())  # plan next move
 
     async def _on_nav_failed(self, msg: dict) -> None:
         reason = msg.get("reason", "unknown")
         logger.warning(f"[Nav] Navigation failed: {reason}")
-        reply = f"Can't go that way — {reason}."
-        await self._game.say(reply)
-        self._log_chat("voyager", reply)
+        self._is_navigating = False
+        asyncio.create_task(self._run_strategy())  # re-plan with different direction
 
     async def _on_nav_update(self, msg: dict) -> None:
         dist = msg.get("distance", 0)
@@ -778,7 +811,7 @@ Pending player messages: {self._pending_chat}"""
                 target = interesting[0]
                 tx = float(target.get("x", px))
                 tz = float(target.get("z", pz))
-                await self._game.navigate_to(tx, py, tz, run=False)
+                await self._navigate_to(tx, py, tz, run=False)
                 logger.info(f"[Nav] Investigating {target.get('name')} at ({tx:.1f}, {tz:.1f})")
             else:
                 # No cached results — scan first
@@ -788,7 +821,7 @@ Pending player messages: {self._pending_chat}"""
             angle = random.uniform(0, 2 * math.pi)
             tx = px + math.sin(angle) * 30.0
             tz = pz + math.cos(angle) * 30.0
-            await self._game.navigate_to(tx, py, tz, run=True)
+            await self._navigate_to(tx, py, tz, run=True)
             logger.info(f"[Nav] Fleeing to ({tx:.1f}, {tz:.1f})")
 
     _CARDINAL_ANGLES = {
@@ -812,7 +845,7 @@ Pending player messages: {self._pending_chat}"""
 
         tx = px + math.sin(angle) * dist
         tz = pz + math.cos(angle) * dist
-        await self._game.navigate_to(tx, py, tz, run=False)
+        await self._navigate_to(tx, py, tz, run=False)
         dir_label = direction or "random"
         logger.info(f"[Nav] Auto-exploring {dir_label} toward ({tx:.1f}, {tz:.1f})")
 

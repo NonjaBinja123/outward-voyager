@@ -271,15 +271,28 @@ class Orchestrator:
         if self._is_navigating:
             px = float(player.get("pos_x", 0))
             pz = float(player.get("pos_z", 0))
+            py = float(player.get("pos_y", 0))
             now = time.time()
             if now - self._nav_snapshot_time >= self._nav_check_interval:
                 sx, sz = self._nav_pos_snapshot
                 dist_moved = math.sqrt((px - sx) ** 2 + (pz - sz) ** 2)
                 if dist_moved < 0.5:
-                    logger.warning("[Nav] Position unchanged — navigation not working, re-planning")
+                    self._nav_stuck_count = getattr(self, "_nav_stuck_count", 0) + 1
+                    logger.warning(f"[Nav] Position unchanged (stuck #{self._nav_stuck_count}) — trying escape")
                     self._is_navigating = False
-                    asyncio.create_task(self._run_strategy())
+                    if self._nav_stuck_count <= 3:
+                        # Try a random escape direction before re-planning
+                        angle = random.uniform(0, 2 * math.pi)
+                        ex = px + math.sin(angle) * 8.0
+                        ez = pz + math.cos(angle) * 8.0
+                        await self._navigate_to(ex, py, ez, run=False)
+                        await self._game.say(f"I seem to be stuck. Trying a different angle.")
+                    else:
+                        self._nav_stuck_count = 0
+                        await self._game.say("I can't seem to move from here. Re-evaluating.")
+                        asyncio.create_task(self._run_strategy())
                 else:
+                    self._nav_stuck_count = 0
                     # Still moving — update snapshot for next check
                     self._nav_pos_snapshot = (px, pz)
                     self._nav_snapshot_time = now
@@ -919,42 +932,18 @@ Pending player messages: {self._pending_chat}"""
             return  # no valid position yet
 
         if intent == "explore":
-            await self._auto_explore(px, py, pz, decision.get("direction"))
-        elif intent == "eat":
+            direction = decision.get("direction")
+            dir_label = direction or "somewhere new"
+            await self._game.say(f"Heading {dir_label}.")
+            await self._auto_explore(px, py, pz, direction)
+        elif intent in ("eat", "drink"):
             item_name = decision.get("item")
             pouch = self._inventory.get("pouch", [])
-            if item_name:
-                food = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
-            else:
-                food = next((i for i in pouch if i.get("is_food")), None)
-            if food:
-                await self._game.use_item(food["name"])
-                logger.info(f"[Eat] Eating {food['name']}")
-            else:
-                logger.info("[Eat] No food in pouch")
-        elif intent == "use_item":
-            item_name = decision.get("item")
-            pouch = self._inventory.get("pouch", [])
-            if item_name:
-                target = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
-                if target:
-                    if target.get("is_equipment"):
-                        await self._game.equip_item(target["name"])
-                        logger.info(f"[Equip] Equipping {target['name']}")
-                    else:
-                        await self._game.use_item(target["name"])
-                        logger.info(f"[Use] Using {target['name']}")
-                else:
-                    logger.info(f"[Use] Item '{item_name}' not found in pouch")
-            else:
-                logger.info("[Use] No item specified in decision")
-        elif intent == "drink":
-            item_name = decision.get("item")
-            pouch = self._inventory.get("pouch", [])
-            # Look for a drink item: specified by LLM, or first non-food consumable that's drinkable
             _DRINK_KEYWORDS = ("water", "drink", "juice", "tea", "ale", "wine", "brew", "flask", "potion")
             if item_name:
                 target = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
+            elif intent == "eat":
+                target = next((i for i in pouch if i.get("is_food")), None)
             else:
                 target = next(
                     (i for i in pouch if any(k in i["name"].lower() for k in _DRINK_KEYWORDS)
@@ -962,11 +951,35 @@ Pending player messages: {self._pending_chat}"""
                     None,
                 )
             if target:
+                display = target["name"].split("_")[0] if "_" in target["name"] else target["name"]
+                verb = "Eating" if intent == "eat" else "Drinking"
+                await self._game.say(f"{verb} {display}.")
                 await self._game.use_item(target["name"])
-                logger.info(f"[Drink] Consuming {target['name']}")
+                logger.info(f"[{intent.capitalize()}] Using {target['name']}")
             else:
-                logger.info("[Drink] No drink item in pouch — will explore to find one")
+                await self._game.say(f"I'm {'hungry' if intent=='eat' else 'thirsty'} but have nothing to {'eat' if intent=='eat' else 'drink'}. Looking around.")
+                logger.info(f"[{intent.capitalize()}] Nothing available in pouch")
                 await self._auto_explore(px, py, pz, decision.get("direction"))
+        elif intent == "use_item":
+            item_name = decision.get("item")
+            pouch = self._inventory.get("pouch", [])
+            if item_name:
+                target = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
+                if target:
+                    display = target["name"].split("_")[0] if "_" in target["name"] else target["name"]
+                    if target.get("is_equipment"):
+                        await self._game.say(f"Equipping {display}.")
+                        await self._game.equip_item(target["name"])
+                        logger.info(f"[Equip] Equipping {target['name']}")
+                    else:
+                        await self._game.say(f"Using {display}.")
+                        await self._game.use_item(target["name"])
+                        logger.info(f"[Use] Using {target['name']}")
+                else:
+                    await self._game.say(f"I wanted to use {item_name} but couldn't find it.")
+                    logger.info(f"[Use] Item '{item_name}' not found in pouch")
+            else:
+                logger.info("[Use] No item specified in decision")
         elif intent == "sleep":
             # Look for a bed/campfire in nearby interactions to rest at
             sleep_keywords = ("bed", "bedroll", "campfire", "fire", "sleep", "inn", "rest")
@@ -977,15 +990,17 @@ Pending player messages: {self._pending_chat}"""
             )
             if rest_spot:
                 uid = rest_spot.get("uid", "")
-                logger.info(f"[Sleep] Triggering rest at {rest_spot.get('label')} (uid={uid})")
+                label = rest_spot.get("label", uid)
+                await self._game.say(f"Resting at {label}.")
+                logger.info(f"[Sleep] Triggering rest at {label} (uid={uid})")
                 await self._game.trigger_interaction(uid)
             elif self._nearby_interactions:
-                # Try nearest interaction — might be a campfire/bed
                 nearest = self._nearby_interactions[0]
+                await self._game.say(f"Trying to rest near {nearest.get('label', 'here')}.")
                 logger.info(f"[Sleep] Trying nearest interaction: {nearest.get('label')}")
                 await self._game.trigger_interaction(nearest.get("uid", ""))
             else:
-                # No rest spot visible — explore toward something
+                await self._game.say("I need to sleep but there's nowhere nearby. Looking for shelter.")
                 logger.info("[Sleep] No rest spot nearby — exploring to find one")
                 await self._auto_explore(px, py, pz, decision.get("direction"))
         elif intent == "interact":
@@ -1003,38 +1018,48 @@ Pending player messages: {self._pending_chat}"""
             if target_interaction:
                 dist = target_interaction.get("distance", 0)
                 label = target_interaction.get("label", uid)
+                # Face camera toward the target
+                await self._game.face_point(
+                    target_interaction.get("x", px),
+                    target_interaction.get("y", py),
+                    target_interaction.get("z", pz),
+                )
                 if dist > 3.0:
-                    # Too far to interact — navigate to it first; re-plan on arrival will interact
+                    await self._game.say(f"Moving toward {label}.")
                     tx = target_interaction.get("x", px)
                     ty = target_interaction.get("y", py)
                     tz = target_interaction.get("z", pz)
                     await self._navigate_to(tx, ty, tz, run=False)
-                    self._pending_interact_uid = uid  # remember to interact on arrival
+                    self._pending_interact_uid = uid
                     logger.info(f"[Interact] Navigating to {label} at {dist:.1f}m first")
                 else:
+                    await self._game.say(f"Interacting with {label}.")
                     logger.info(f"[Interact] Triggering {label} (uid={uid}, dist={dist:.1f}m)")
                     await self._game.trigger_interaction(uid)
             else:
+                await self._game.say("Looking for something to interact with.")
                 await self._game.interact(radius=3.0)
                 logger.info("[Interact] No uid — falling back to proximity interact")
         elif intent == "investigate":
-            # If we have cached scan results with characters/items, walk to the closest
             interesting = [o for o in self._nearby_objects
                            if o.get("has_character") or o.get("has_item")]
             if interesting:
                 target = interesting[0]
                 tx = float(target.get("x", px))
                 tz = float(target.get("z", pz))
+                name = target.get("name", "something")
+                await self._game.say(f"Going to investigate {name}.")
+                await self._game.face_point(tx, py, tz)
                 await self._navigate_to(tx, py, tz, run=False)
-                logger.info(f"[Nav] Investigating {target.get('name')} at ({tx:.1f}, {tz:.1f})")
+                logger.info(f"[Nav] Investigating {name} at ({tx:.1f}, {tz:.1f})")
             else:
-                # No cached results — scan first
+                await self._game.say("Scanning the area.")
                 await self._game.scan_nearby(radius=40.0)
         elif intent == "flee":
-            # Run in a random direction away from danger
             angle = random.uniform(0, 2 * math.pi)
             tx = px + math.sin(angle) * 30.0
             tz = pz + math.cos(angle) * 30.0
+            await self._game.say("Running!")
             await self._navigate_to(tx, py, tz, run=True)
             logger.info(f"[Nav] Fleeing to ({tx:.1f}, {tz:.1f})")
 

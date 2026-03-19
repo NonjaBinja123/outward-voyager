@@ -104,6 +104,9 @@ public class ActionExecutor
             case "read_skills":
                 ReadSkills();
                 break;
+            case "face_point":
+                FacePoint(cmd.Params);
+                break;
             default:
                 Plugin.Log.LogWarning($"Unknown action: {cmd.Action}");
                 SendError($"unknown action: {cmd.Action}");
@@ -363,11 +366,32 @@ public class ActionExecutor
                 return;
             }
 
-            // Try Use(), then UseItem() via reflection
+            // Try item-level no-arg methods first
             bool ok = TryInvokeNoArgMethod(found, "Use");
             if (!ok) ok = TryInvokeNoArgMethod(found, "UseItem");
             if (!ok) ok = TryInvokeNoArgMethod(found, "OnUse");
-            Plugin.Log.LogInfo($"[UseItem] Use {found.name}: {(ok ? "ok" : "no method")}");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "Perform");
+
+            // Try character-level methods: character.UseItem(item) / character.Use(item)
+            if (!ok)
+            {
+                ok = TryInvokeOneArgMethod(character, "UseItem", found);
+                if (!ok) ok = TryInvokeOneArgMethod(character, "Use", found);
+            }
+
+            // Try Food component: food.OnEat(character) or similar
+            if (!ok)
+            {
+                var foodComp = found.GetComponentInChildren<Food>();
+                if (foodComp != null)
+                {
+                    ok = TryInvokeOneArgMethod(foodComp, "OnEat", character);
+                    if (!ok) ok = TryInvokeOneArgMethod(foodComp, "Consume", character);
+                    if (!ok) ok = TryInvokeNoArgMethod(foodComp, "Use");
+                }
+            }
+
+            Plugin.Log.LogInfo($"[UseItem] Use {found.name}: {(ok ? "ok" : "no method found")}");
             _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "use_item", success = ok, item = found.name });
         }
         catch (Exception ex)
@@ -649,6 +673,52 @@ public class ActionExecutor
         try { nll.SetContinueAfterLoading(); } catch (Exception ex) { Plugin.Log.LogWarning($"SetContinueAfterLoading: {ex.Message}"); }
         try { nll.ForceAllPlayersReady(); }    catch (Exception ex) { Plugin.Log.LogWarning($"ForceAllPlayersReady: {ex.Message}"); }
         _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "menu_press_space", success = true });
+    }
+
+    /// <summary>
+    /// Rotate the CharacterCamera so the player faces a world point.
+    /// params: { "x": float, "y": float, "z": float }
+    /// </summary>
+    private void FacePoint(Dictionary<string, object?> p)
+    {
+        float tx = GetFloat(p, "x", 0f);
+        float tz = GetFloat(p, "z", 0f);
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) { SendError("no character"); return; }
+
+            var charPos = character.transform.position;
+            float dx = tx - charPos.x;
+            float dz = tz - charPos.z;
+            if (Math.Abs(dx) < 0.01f && Math.Abs(dz) < 0.01f)
+            {
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "face_point", success = false, reason = "too_close" });
+                return;
+            }
+
+            // Compute world Y angle to face target (Unity: 0° = +Z, 90° = +X)
+            float targetYaw = Mathf.Atan2(dx, dz) * Mathf.Rad2Deg;
+
+            var charCams = CharacterCamera.CharCamList;
+            if (charCams != null && charCams.Count > 0)
+            {
+                var cam = charCams[0];
+                var euler = cam.transform.eulerAngles;
+                cam.transform.eulerAngles = new Vector3(euler.x, targetYaw, euler.z);
+                Plugin.Log.LogInfo($"[FacePoint] Rotated camera to yaw={targetYaw:F1}°");
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "face_point", success = true, yaw = targetYaw });
+            }
+            else
+            {
+                SendError("no camera found");
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[FacePoint] error: {ex.Message}");
+            SendError($"face_point failed: {ex.Message}");
+        }
     }
 
     /// <summary>

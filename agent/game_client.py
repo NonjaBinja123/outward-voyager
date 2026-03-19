@@ -105,3 +105,6 @@ class GameClient:
 
     async def read_skills(self) -> None:
         await self.send("read_skills")
+
+    async def face_point(self, x: float, y: float, z: float) -> None:
+        await self.send("face_point", {"x": x, "y": y, "z": z})

@@ -970,6 +970,133 @@ Pending player messages: {self._pending_chat}"""
             tags=[intent],
         ))
 
+        # Check if any session goals are now complete
+        self._check_goal_completion()
+
+        # Add observations to mental map
+        self._record_mental_map_notes()
+
+    def _check_goal_completion(self) -> None:
+        """Rule-based goal completion — mark goals done based on current game state."""
+        p = self._current_state.get("player", {})
+        scene = self._current_state.get("scene", "unknown")
+        loc = self._map.get(scene)
+
+        for goal in self._goals.active_session_goals():
+            gid = goal.id
+            completed = False
+            reason = ""
+
+            if gid == "explore_starting_area":
+                # Complete if we've visited this area at least 3 times
+                if loc and loc.visit_count >= 3:
+                    completed = True
+                    reason = f"visited {loc.scene} {loc.visit_count} times"
+
+            elif gid == "find_food_water":
+                food_ok = p.get("max_food", 0) > 0 and (p.get("food", 0) / max(1, p.get("max_food", 1))) > 0.70
+                drink_ok = p.get("max_drink", 0) > 0 and (p.get("drink", 0) / max(1, p.get("max_drink", 1))) > 0.70
+                if food_ok and drink_ok:
+                    completed = True
+                    reason = "food and drink above 70%"
+
+            elif gid == "learn_world":
+                # Complete after visiting at least 2 distinct scenes
+                familiar = self._map.most_familiar(10)
+                if len(familiar) >= 2:
+                    completed = True
+                    reason = f"visited {len(familiar)} locations"
+
+            if completed:
+                self._goals.complete(gid)
+                logger.info(f"[Goals] Completed '{gid}': {reason}")
+                self._journal.record(JournalEntry(
+                    text=f"Completed goal '{goal.description}': {reason}",
+                    scene=scene,
+                    tags=["goal_complete", gid],
+                ))
+                asyncio.create_task(self._maybe_create_new_goal(goal))
+
+    async def _maybe_create_new_goal(self, completed_goal: Goal) -> None:
+        """Ask the LLM to generate a new session goal after completing one."""
+        # Only generate new goals occasionally — not after every completion
+        active = self._goals.active_session_goals()
+        if len(active) >= 3:
+            return  # plenty of goals already
+
+        scene = self._current_state.get("scene", "unknown")
+        p = self._current_state.get("player", {})
+        familiar = self._map.most_familiar(3)
+        long_term = self._goals.active_long_term_goals()
+
+        prompt = (
+            f"You are Voyager, an autonomous agent playing Outward.\n"
+            f"You just completed the goal: '{completed_goal.description}'\n"
+            f"Current scene: {scene}\n"
+            f"Player health: {p.get('health', '?')}/{p.get('max_health', '?')}\n"
+            f"Familiar locations: {[l.scene for l in familiar]}\n"
+            f"Long-term ambitions: {[g.description for g in long_term[:3]]}\n"
+            f"Active session goals remaining: {[g.description for g in self._goals.active_session_goals()]}\n\n"
+            "Propose ONE new short-term session goal (achievable in the next 5-10 minutes) "
+            "that builds on your progress. Be specific and actionable.\n"
+            "Respond with ONLY JSON: {\"id\": \"snake_case_id\", \"description\": \"...\", \"priority\": <1-10>}"
+        )
+        try:
+            resp = await self._llm.complete("You are a game agent proposing goals.", prompt, task="strategy")
+            if not resp:
+                return
+            resp = resp.strip()
+            if resp.startswith("```"):
+                resp = "\n".join(resp.split("\n")[1:-1])
+            data = json.loads(resp)
+            new_goal = Goal(
+                id=data.get("id", f"auto_{int(time.time())}"),
+                description=data.get("description", "Explore further"),
+                priority=int(data.get("priority", 5)),
+                tags=["auto_generated"],
+            )
+            self._goals.add_session_goal(new_goal)
+            logger.info(f"[Goals] Created new goal: {new_goal.id} — {new_goal.description}")
+            self._journal.record(JournalEntry(
+                text=f"Set new goal: {new_goal.description}",
+                scene=self._current_state.get("scene", "unknown"),
+                tags=["new_goal", "auto_generated"],
+            ))
+        except Exception as e:
+            logger.debug(f"[Goals] Goal generation failed: {e}")
+
+    def _record_mental_map_notes(self) -> None:
+        """Add observations to the mental map based on what's currently visible."""
+        scene = self._current_state.get("scene", "unknown")
+        if not scene or scene == "unknown":
+            return
+
+        # Record nearby interactions as scene notes (once per unique name)
+        for ix in self._nearby_interactions[:3]:
+            label = ix.get("label") or ix.get("uid", "")
+            if label and len(label) > 3:
+                note = f"interaction: {label}"
+                loc = self._map.get(scene)
+                if loc is None or note not in loc.notes:
+                    self._map.add_note(scene, note)
+
+        # Record enemy encounters as danger notes
+        p = self._current_state.get("player", {})
+        if p.get("in_combat"):
+            note = f"combat encountered here"
+            loc = self._map.get(scene)
+            if loc is None or note not in loc.notes:
+                self._map.add_note(scene, note)
+
+        # Record food/resource item sightings
+        food_items = [o for o in self._nearby_objects if o.get("is_food") or
+                      any(k in o.get("name", "").lower() for k in ["berry", "mushroom", "seaweed", "fish"])]
+        if food_items:
+            note = f"food found: {food_items[0].get('name', 'unknown')}"
+            loc = self._map.get(scene)
+            if loc is None or note not in (loc.notes or []):
+                self._map.add_note(scene, note)
+
     # ── Intent execution (when no skills match) ─────────────────────────
 
     async def _execute_intent(self, intent: str, decision: dict) -> None:

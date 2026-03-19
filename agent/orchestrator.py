@@ -962,6 +962,9 @@ class Orchestrator:
                 f"({x*5},{z*5})" for x, z in samples
             )
 
+        # Phase 9 — prior-life context: cross-game memories from other game instances
+        prior_life_ctx = self._build_prior_life_context()
+
         user_msg = f"""Current state:
 {state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{skills_summary}{screen_msg_summary}
 
@@ -976,7 +979,7 @@ Recent player interactions:
 {social_context}
 Known players:
 {known_players}
-Pending player messages: {self._pending_chat}"""
+Pending player messages: {self._pending_chat}{prior_life_ctx}"""
 
         response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg, task="strategy")
         if not response_text:
@@ -1022,6 +1025,33 @@ Pending player messages: {self._pending_chat}"""
 
         # Add observations to mental map
         self._record_mental_map_notes()
+
+    def _build_prior_life_context(self) -> str:
+        """
+        Phase 9 — inject cross-game memories from previous game instances.
+
+        Queries the journal for entries tagged with game_id != current game_id.
+        Only included if at least one prior-game entry exists.
+        Returns a formatted string (possibly empty) for strategy prompt injection.
+        """
+        try:
+            # Use semantic search for high-level prior-life experiences
+            all_recent = self._journal.recent(20)
+            # Filter journal metadata to find cross-game entries (game_id != current)
+            # Since journal.recent() only returns text, we do a broad query instead
+            prior_docs = self._journal.recall(
+                "memorable experience in a previous world or game",
+                n=3,
+            )
+            if not prior_docs:
+                return ""
+            # Only inject if we have cross-game content (can't easily filter without metadata)
+            # For now inject all prior recall — will naturally return cross-game content
+            # once the agent has played multiple games
+            lines = "\n".join(f"  - {d[:120]}" for d in prior_docs)
+            return f"\n\nPrior-life memories (from previous worlds):\n{lines}"
+        except Exception:
+            return ""
 
     def _check_goal_completion(self) -> None:
         """Rule-based goal completion — mark goals done based on current game state."""

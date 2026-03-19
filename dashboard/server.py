@@ -211,6 +211,40 @@ def get_skills() -> JSONResponse:
         return JSONResponse({"error": str(e)})
 
 
+@app.get("/api/social")
+def get_social() -> JSONResponse:
+    """Recent player interactions from social memory log."""
+    records = _read_jsonl(DATA_DIR / "social_memory.jsonl", limit=50)
+    # Deduplicate: keep latest record for each (player, timestamp) pair
+    seen: set[str] = set()
+    out = []
+    for r in reversed(records):
+        key = f"{r.get('player','')}_{r.get('timestamp',0)}"
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    out.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+    return JSONResponse(out[:30])
+
+
+@app.get("/api/relationships")
+def get_relationships() -> JSONResponse:
+    """Player relationship profiles."""
+    data = _read_json(DATA_DIR / "relationships.json", {})
+    players = list(data.values()) if isinstance(data, dict) else []
+    players.sort(key=lambda p: p.get("last_seen_ts", 0), reverse=True)
+    return JSONResponse(players)
+
+
+@app.get("/api/keybindings")
+def get_keybindings() -> JSONResponse:
+    """Currently known keybindings."""
+    data = _read_json(DATA_DIR / "keybindings.json", {})
+    bindings = [v for v in data.values()]
+    bindings.sort(key=lambda b: (-b.get("confidence", 0), b.get("action", "")))
+    return JSONResponse(bindings)
+
+
 # ── Game stream ──────────────────────────────────────────────────────────────
 # Dedicated background thread captures frames; WebSocket pushes them to browser.
 
@@ -331,7 +365,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-15 v10</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v11</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">
@@ -414,6 +448,18 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card" id="card-novelty">
     <h2>Novelty (top discoveries)</h2>
     <div id="novelty-body">Loading...</div>
+  </div>
+  <div class="card" id="card-relationships">
+    <h2>Player Relationships</h2>
+    <div id="relationships-body">Loading...</div>
+  </div>
+  <div class="card" id="card-social">
+    <h2>Social Memory</h2>
+    <div id="social-body">Loading...</div>
+  </div>
+  <div class="card" id="card-keybindings">
+    <h2>Learned Keybindings</h2>
+    <div id="keybindings-body">Loading...</div>
   </div>
 </main>
 <script>
@@ -782,6 +828,66 @@ async function refreshLog() {
 
 async function safeRun(fn) { try { await fn(); } catch(e) {} }
 
+async function refreshRelationships() {
+  const data = await fetchJSON('/api/relationships');
+  const el = document.getElementById('relationships-body');
+  if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No players met yet</span>'; return; }
+  const CONF = ['default','vision','rewired','observed'];
+  el.innerHTML = '<table><thead><tr><th>Player</th><th>Disposition</th><th>Trust</th><th>Seen</th><th>Traits</th></tr></thead><tbody>' +
+    data.map(p => {
+      const disp = p.disposition >= 0.25 ? 'friendly' : p.disposition <= -0.25 ? 'hostile' : 'neutral';
+      const dispColor = p.disposition >= 0.25 ? '#238636' : p.disposition <= -0.25 ? '#b91c1c' : '#8b949e';
+      const traits = (p.inferred_traits || []).slice(0,3).map(t => `<span class="tag">${t}</span>`).join('');
+      return `<tr><td><strong>${p.player}</strong></td>` +
+        `<td style="color:${dispColor}">${disp} (${p.disposition >= 0 ? '+' : ''}${(p.disposition||0).toFixed(2)})</td>` +
+        `<td>${((p.trust||0)*100).toFixed(0)}%</td>` +
+        `<td>${p.interaction_count||0}×</td>` +
+        `<td>${traits}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+async function refreshSocial() {
+  const data = await fetchJSON('/api/social');
+  const el = document.getElementById('social-body');
+  if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No interactions yet</span>'; return; }
+  el.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px">' +
+    data.slice(0,10).map(ix => {
+      const ago = _relTime(ix.timestamp);
+      const resp = ix.agent_response ? `<div style="color:#58a6ff;font-size:0.78rem;margin-top:2px">→ ${ix.agent_response}</div>` : '';
+      const sentColor = ix.sentiment > 0.1 ? '#238636' : ix.sentiment < -0.1 ? '#b91c1c' : '#8b949e';
+      return `<div style="background:#0d1117;border-radius:6px;padding:8px">` +
+        `<span style="color:#e6edf3;font-weight:bold">${ix.player}</span>` +
+        `<span style="color:#8b949e;font-size:0.72rem;margin-left:8px">${ago}</span>` +
+        `<span style="color:${sentColor};font-size:0.72rem;margin-left:8px">sentiment:${ix.sentiment >= 0 ? '+' : ''}${(ix.sentiment||0).toFixed(2)}</span>` +
+        `<div style="margin-top:4px">"${ix.message}"</div>${resp}</div>`;
+    }).join('') + '</div>';
+}
+
+async function refreshKeybindings() {
+  const data = await fetchJSON('/api/keybindings');
+  const el = document.getElementById('keybindings-body');
+  if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No keybindings loaded</span>'; return; }
+  const CONF_LABELS = ['default','vision','rewired','observed'];
+  const CONF_COLORS = ['#8b949e','#e3b341','#58a6ff','#238636'];
+  el.innerHTML = '<table><thead><tr><th>Action</th><th>Key</th><th>Source</th></tr></thead><tbody>' +
+    data.map(b => {
+      const conf = b.confidence || 0;
+      const color = CONF_COLORS[Math.min(conf, CONF_COLORS.length-1)];
+      const label = CONF_LABELS[Math.min(conf, CONF_LABELS.length-1)];
+      return `<tr><td>${b.action}</td><td><kbd style="background:#21262d;border:1px solid #444;border-radius:3px;padding:1px 5px;font-family:monospace">${(b.key||'').toUpperCase()}</kbd></td>` +
+        `<td style="color:${color}">${label}</td></tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+function _relTime(ts) {
+  if (!ts) return 'unknown';
+  var delta = Math.floor(Date.now()/1000 - ts);
+  if (delta < 60) return 'just now';
+  if (delta < 3600) return Math.floor(delta/60) + 'm ago';
+  if (delta < 86400) return Math.floor(delta/3600) + 'h ago';
+  return Math.floor(delta/86400) + 'd ago';
+}
+
 // ── Draggable / resizable layout ─────────────────────────────────────────
 var _DEFAULT_LAYOUT = {
   'card-chat':    {left:20,   top:20,   width:600, height:340},
@@ -797,7 +903,10 @@ var _DEFAULT_LAYOUT = {
   'card-skills':  {left:20,   top:680,  width:440, height:280},
   'card-sandbox': {left:480,  top:680,  width:440, height:280},
   'card-goals':   {left:940,  top:380,  width:440, height:280},
-  'card-novelty': {left:20,   top:980,  width:440, height:280}
+  'card-novelty':        {left:20,   top:980,  width:440, height:280},
+  'card-relationships':  {left:480,  top:980,  width:440, height:280},
+  'card-social':         {left:940,  top:980,  width:440, height:340},
+  'card-keybindings':    {left:1400, top:980,  width:340, height:340}
 };
 
 function _saveLayout() {
@@ -853,7 +962,7 @@ async function refreshAll() {
   await Promise.all([
     refreshDiag(), refreshChat(), refreshLog(), refreshAgentLog(), refreshPrefs(), refreshCombat(),
     refreshMap(), refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
-    refreshGameState(), refreshLLMUsage()
+    refreshGameState(), refreshLLMUsage(), refreshRelationships(), refreshSocial(), refreshKeybindings()
   ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }

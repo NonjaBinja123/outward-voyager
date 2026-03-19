@@ -35,6 +35,9 @@ class Interaction:
     outcome: str = ""      # Optional: what happened after ("player left", "helped them", etc.)
     sentiment: float = 0.0 # -1.0 hostile → 0.0 neutral → +1.0 friendly (inferred)
     tags: list[str] = field(default_factory=list)
+    # Phase 9 — cross-game provenance
+    game_id: str = ""              # e.g. "outward_definitive"
+    game_display_name: str = ""    # e.g. "Outward Definitive Edition"
 
 
 class SocialMemoryManager:
@@ -62,6 +65,8 @@ class SocialMemoryManager:
         agent_response: str = "",
         sentiment: float = 0.0,
         tags: list[str] | None = None,
+        game_id: str = "",
+        game_display_name: str = "",
     ) -> Interaction:
         """Convenience wrapper — creates and records an Interaction."""
         ix = Interaction(
@@ -71,6 +76,8 @@ class SocialMemoryManager:
             scene=scene,
             sentiment=sentiment,
             tags=tags or [],
+            game_id=game_id,
+            game_display_name=game_display_name,
         )
         self.record(ix)
         return ix

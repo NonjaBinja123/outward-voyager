@@ -18,6 +18,9 @@ class JournalEntry:
     scene: str
     tags: list[str]
     timestamp: float = 0.0
+    # Phase 9 — cross-game provenance
+    game_id: str = ""              # e.g. "outward_definitive"
+    game_display_name: str = ""    # e.g. "Outward Definitive Edition"
 
     def __post_init__(self) -> None:
         if not self.timestamp:
@@ -37,9 +40,18 @@ class AdventureJournal:
         if self._col is None:
             return
         entry_id = f"{entry.scene}_{int(entry.timestamp * 1000)}"
+        metadata: dict = {
+            "scene": entry.scene,
+            "tags": ",".join(entry.tags),
+            "ts": entry.timestamp,
+        }
+        if entry.game_id:
+            metadata["game_id"] = entry.game_id
+        if entry.game_display_name:
+            metadata["game_display_name"] = entry.game_display_name
         self._col.add(
             documents=[entry.text],
-            metadatas=[{"scene": entry.scene, "tags": ",".join(entry.tags), "ts": entry.timestamp}],
+            metadatas=[metadata],
             ids=[entry_id],
         )
 

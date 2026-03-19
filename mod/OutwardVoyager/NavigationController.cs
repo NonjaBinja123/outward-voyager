@@ -23,8 +23,9 @@ public class NavigationController : MonoBehaviour
     // Progress-based stuck detection: if distance to target hasn't decreased by
     // at least ProgressMinimum units over ProgressCheckInterval seconds → stuck.
     // This catches wall-sliding (character moves but isn't getting closer).
-    private const float ProgressCheckInterval = 3.0f;
-    private const float ProgressMinimum = 0.5f;
+    // 8s / 0.3m — generous enough for indoor geometry but still catches true stuck.
+    private const float ProgressCheckInterval = 8.0f;
+    private const float ProgressMinimum = 0.3f;
     private float _lastProgressCheckTime;
     private float _distAtLastProgressCheck;
 

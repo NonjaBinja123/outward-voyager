@@ -187,6 +187,7 @@ class Orchestrator:
         self._inventory: dict = {}
         self._screen_message: str = ""
         self._known_skills: list[dict] = []  # Known skills from SkillKnowledge
+        self._pending_interact_uid: str = ""  # Interact with this uid after nav arrives
 
         # Prevent concurrent strategy runs from stepping on each other
         self._strategy_lock = asyncio.Lock()
@@ -716,6 +717,12 @@ class Orchestrator:
     async def _on_nav_arrived(self, msg: dict) -> None:
         logger.info("[Nav] Arrived at destination.")
         self._is_navigating = False
+        # If we were navigating in order to interact, trigger it now
+        if self._pending_interact_uid:
+            uid = self._pending_interact_uid
+            self._pending_interact_uid = ""
+            logger.info(f"[Interact] Arrived — now triggering {uid}")
+            await self._game.trigger_interaction(uid)
         asyncio.create_task(self._run_strategy())  # plan next move
 
     async def _on_nav_failed(self, msg: dict) -> None:
@@ -781,15 +788,22 @@ class Orchestrator:
         temp          = p.get("body_temperature", 20)
         status_effects= p.get("status_effects", [])
 
+        # Only show survival stats if the game is returning valid (non-zero) max values.
+        # max=0 means IL2CPP reflection couldn't read the field — treat as unknown, not critical.
+        def stat_line(label: str, cur: float, mx: float) -> str:
+            if mx <= 0:
+                return ""  # unreadable — omit rather than mislead the LLM
+            return f"{label}: {pct(cur, mx)}\n"
+
         state_summary = (
             f"Scene: {scene}\n"
             f"Health:   {pct(hp,  max_hp)}\n"
             f"Stamina:  {pct(stam,max_stam)}\n"
-            f"Mana:     {pct(mana,max_mana)}\n"
-            f"Food:     {pct(food,max_food)}\n"
-            f"Drink:    {pct(drink,max_drk)}\n"
-            f"Sleep:    {pct(slp, max_slp)}\n"
-            f"Temp:     {temp:.1f}°\n"
+            + stat_line("Mana",  mana, max_mana)
+            + stat_line("Food",  food, max_food)
+            + stat_line("Drink", drink, max_drk)
+            + stat_line("Sleep", slp,  max_slp)
+            + (f"Temp:     {temp:.1f}°\n" if temp != 20.0 else "")
             + (f"Status effects: {', '.join(status_effects)}\n" if status_effects else "")
             + f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"
             f"In combat: {p.get('in_combat', False)}  Dead: {p.get('is_dead', False)}"
@@ -976,13 +990,30 @@ Pending player messages: {self._pending_chat}"""
                 await self._auto_explore(px, py, pz, decision.get("direction"))
         elif intent == "interact":
             uid = decision.get("interaction_uid", "")
-            if not uid and self._nearby_interactions:
-                nearest = self._nearby_interactions[0]
-                uid = nearest.get("uid", "")
-                label = nearest.get("label", uid)
-                logger.info(f"[Interact] Triggering {label} (uid={uid})")
+            # Pick target: LLM-specified uid or nearest interaction
+            target_interaction = None
             if uid:
-                await self._game.trigger_interaction(uid)
+                target_interaction = next(
+                    (i for i in self._nearby_interactions if i.get("uid") == uid), None
+                )
+            if not target_interaction and self._nearby_interactions:
+                target_interaction = self._nearby_interactions[0]
+                uid = target_interaction.get("uid", "")
+
+            if target_interaction:
+                dist = target_interaction.get("distance", 0)
+                label = target_interaction.get("label", uid)
+                if dist > 3.0:
+                    # Too far to interact — navigate to it first; re-plan on arrival will interact
+                    tx = target_interaction.get("x", px)
+                    ty = target_interaction.get("y", py)
+                    tz = target_interaction.get("z", pz)
+                    await self._navigate_to(tx, ty, tz, run=False)
+                    self._pending_interact_uid = uid  # remember to interact on arrival
+                    logger.info(f"[Interact] Navigating to {label} at {dist:.1f}m first")
+                else:
+                    logger.info(f"[Interact] Triggering {label} (uid={uid}, dist={dist:.1f}m)")
+                    await self._game.trigger_interaction(uid)
             else:
                 await self._game.interact(radius=3.0)
                 logger.info("[Interact] No uid — falling back to proximity interact")

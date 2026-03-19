@@ -292,7 +292,9 @@ public class GameStateReader
                 if (activator == null) continue;
                 if (!activator.gameObject.activeInHierarchy) continue;
 
-                var pos = root.transform.position;
+                // Use the activator/collider position — NOT the root position which can be
+                // hundreds of metres away if the root is a zone manager.
+                var pos = activator.transform.position;
                 float dist = FlatDistance(pos, playerPos);
 
                 // Attempt to read a label — try known field/property names via reflection

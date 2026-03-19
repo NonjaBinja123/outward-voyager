@@ -29,6 +29,9 @@ from sandbox.executor import SandboxExecutor
 from skills.composer import SkillComposer
 from skills.database import SkillDatabase
 from skills.schema import Skill
+from keybinding_learner import KeybindingLearner
+from social.memory import SocialMemoryManager
+from social.relationships import RelationshipEngine
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +177,9 @@ class Orchestrator:
         self._reward = RewardEngine("./data")
         self._combat = CombatLearner("./data")
         self._sandbox = SandboxExecutor("./data")
+        self._keybindings = KeybindingLearner("./data")
+        self._social = SocialMemoryManager("./data/social_memory.jsonl")
+        self._relationships = RelationshipEngine("./data/relationships.json")
 
         agent_cfg = config.get("agent", {})
         self._autonomous_movement: bool = agent_cfg.get("autonomous_movement", False)
@@ -376,6 +382,14 @@ class Orchestrator:
         self._log_chat("player", message, name=player)
         logger.info(f"Chat from {player}: {message}")
 
+        # Record interaction in social memory
+        scene = self._current_state.get("scene", "unknown")
+        sentiment = self._relationships.infer_sentiment(message)
+        trait = self._relationships.infer_trait(message)
+        ix = self._social.record_message(player, message, scene, sentiment=sentiment,
+                                         tags=[trait] if trait else [])
+        self._relationships.update_from_interaction(player, sentiment, scene, trait)
+
         # Only intercept unambiguous immediate commands
         if await self._try_nav_to_dead(message):
             return
@@ -430,13 +444,25 @@ class Orchestrator:
                 + (f"Recent conversation:\n{chat_history}\n\n" if chat_history else "")
                 + f"{player} says: {message}"
             )
-            reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt, task="chat")
+            # Include relationship context for this player
+            rel = self._relationships.get(player)
+            social_hint = (
+                f"\nYou know {player}: {rel.short_summary()}"
+                if self._relationships.has_met(player) else ""
+            )
+            prompt_with_social = prompt + social_hint
+
+            reply = await self._llm.complete(CHAT_SYSTEM_PROMPT, prompt_with_social, task="chat")
             if reply:
                 # Strip any quotes the LLM might wrap around its response
                 reply = reply.strip().strip('"').strip("'")
                 await self._game.say(reply)
                 self._log_chat("voyager", reply)
                 logger.info(f"[Chat] Voyager replied: {reply}")
+                # Record the agent's response in social memory
+                recent_ix = self._social.for_player(player, n=1)
+                if recent_ix:
+                    self._social.update_response(recent_ix[0], reply)
         except Exception as e:
             logger.error(f"Chat response error: {e}")
 
@@ -780,6 +806,8 @@ class Orchestrator:
                 if cycle % 10 == 0:  # Read skills + save LLM usage every ~5 minutes
                     await self._game.read_skills()
                     self._llm.save_usage()
+                if cycle % 20 == 0:  # Vision keybinding discovery every ~10 minutes
+                    asyncio.create_task(self._keybindings.discover_from_screenshot())
             except Exception as e:
                 logger.error(f"Strategy loop error: {e}")
 
@@ -880,6 +908,13 @@ class Orchestrator:
             skill_names = [s.get("name", "?") for s in self._known_skills[:15]]
             skills_summary = f"\nKnown skills/abilities: {', '.join(skill_names)}"
 
+        # Social context
+        social_context = self._social.context_block(scene, n=4)
+        known_players = self._relationships.context_block()
+
+        # Keybinding context — what keys the agent can press
+        keybinding_context = self._keybindings.as_context_string()
+
         user_msg = f"""Current state:
 {state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{skills_summary}{screen_msg_summary}
 
@@ -888,6 +923,12 @@ Recent journal: {recent}
 Familiar locations: {[l.scene for l in familiar]}
 Personality: {personality}
 Combat experience: {combat_exp}
+Known keyboard shortcuts (learned):
+{keybinding_context}
+Recent player interactions:
+{social_context}
+Known players:
+{known_players}
 Pending player messages: {self._pending_chat}"""
 
         response_text = await self._llm.complete(STRATEGY_SYSTEM_PROMPT, user_msg, task="strategy")

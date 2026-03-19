@@ -41,8 +41,10 @@ REM API is initialized before the game process starts.
 echo [3/5] Launching Outward Definitive Edition via Steam...
 start "" "steam://rungameid/794260"
 
-REM ── Step 4: Wait for game WebSocket to come up, then start agent
+REM ── Step 4: Kill any existing agent/dashboard, then start fresh
 echo [4/5] Starting agent (will retry until game is ready)...
+taskkill /f /t /fi "WINDOWTITLE eq Voyager Agent*" 2>nul
+taskkill /f /t /fi "WINDOWTITLE eq Voyager Dashboard*" 2>nul
 timeout /t 5 /nobreak >nul
 start "Voyager Agent" cmd /k "cd /d "C:\Projects\Outward Voyager\agent" && py main.py"
 

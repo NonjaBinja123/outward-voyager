@@ -833,9 +833,10 @@ class Orchestrator:
         hp,  max_hp   = p.get("health", 0),   p.get("max_health", 100)
         stam,max_stam = p.get("stamina", 0),  p.get("max_stamina", 100)
         mana,max_mana = p.get("mana", 0),     p.get("max_mana", 0)
-        food,max_food = p.get("food", 0),     p.get("max_food", 100)
-        drink,max_drk = p.get("drink", 0),    p.get("max_drink", 100)
-        slp, max_slp  = p.get("sleep", 0),    p.get("max_sleep", 100)
+        food,max_food = p.get("food", 0),       p.get("max_food", 100)
+        drink,max_drk = p.get("drink", 0),      p.get("max_drink", 100)
+        slp, max_slp  = p.get("sleep", 0),      p.get("max_sleep", 100)
+        corr,max_corr = p.get("corruption", 0), p.get("max_corruption", 100)
         temp          = p.get("body_temperature", 20)
         status_effects= p.get("status_effects", [])
 
@@ -853,7 +854,8 @@ class Orchestrator:
             + stat_line("Mana",  mana, max_mana)
             + stat_line("Food",  food, max_food)
             + stat_line("Drink", drink, max_drk)
-            + stat_line("Sleep", slp,  max_slp)
+            + stat_line("Sleep",      slp,  max_slp)
+            + stat_line("Corruption", corr, max_corr)
             + (f"Temp:     {temp:.1f}°\n" if temp != 20.0 else "")
             + (f"Status effects: {', '.join(status_effects)}\n" if status_effects else "")
             + f"Position: ({p.get('pos_x', 0):.0f}, {p.get('pos_z', 0):.0f})\n"

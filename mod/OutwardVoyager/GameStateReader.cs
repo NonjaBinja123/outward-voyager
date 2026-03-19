@@ -139,14 +139,20 @@ public class GameStateReader
         _statFieldsDumped = true;
         try
         {
+            var flags = Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                        Il2CppSystem.Reflection.BindingFlags.Public |
+                        Il2CppSystem.Reflection.BindingFlags.Instance;
             var statsType = stats.GetIl2CppType();
-            var fields = statsType.GetFields(
-                Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                Il2CppSystem.Reflection.BindingFlags.Public |
-                Il2CppSystem.Reflection.BindingFlags.Instance);
+
+            var fields = statsType.GetFields(flags);
             Plugin.Log.LogInfo($"[StatsDump] CharacterStats has {fields.Count} fields:");
             foreach (var f in fields)
-                Plugin.Log.LogInfo($"  Field: {f.FieldType?.Name ?? "?"} {f.Name}");
+                Plugin.Log.LogInfo($"  [F] {f.FieldType?.Name ?? "?"} {f.Name}");
+
+            var props = statsType.GetProperties(flags);
+            Plugin.Log.LogInfo($"[StatsDump] CharacterStats has {props.Count} properties:");
+            foreach (var p in props)
+                Plugin.Log.LogInfo($"  [P] {p.PropertyType?.Name ?? "?"} {p.Name}");
         }
         catch (Exception ex) { Plugin.Log.LogWarning($"[StatsDump] failed: {ex.Message}"); }
     }
@@ -169,32 +175,54 @@ public class GameStateReader
                 if (val == null) continue;
 
                 var statType = val.GetIl2CppType();
-                // Try both CamelCase and m_camelCase property names
+                // Try properties first (public API), then fields (backing storage)
+                var flags = Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                            Il2CppSystem.Reflection.BindingFlags.Instance;
+
+                bool foundCurrent = false, foundMax = false;
                 foreach (var curName in new[] { "CurrentValue", "m_currentValue", "Value", "m_value" })
                 {
-                    var curProp = statType.GetProperty(curName,
-                        Il2CppSystem.Reflection.BindingFlags.Public |
-                        Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                        Il2CppSystem.Reflection.BindingFlags.Instance);
+                    var curProp = statType.GetProperty(curName, flags);
                     if (curProp != null)
                     {
                         var r = curProp.GetValue(val, null);
-                        if (r != null) { current = Il2CppUnbox<float>(r); break; }
+                        if (r != null) { current = Il2CppUnbox<float>(r); foundCurrent = true; break; }
+                    }
+                    var curField = statType.GetField(curName, flags);
+                    if (curField != null)
+                    {
+                        var r = curField.GetValue(val);
+                        if (r != null) { current = Il2CppUnbox<float>(r); foundCurrent = true; break; }
                     }
                 }
-                foreach (var maxName in new[] { "MaxValue", "m_maxValue", "Max", "m_max" })
+                foreach (var maxName in new[] { "MaxValue", "m_maxValue", "Max", "m_max",
+                                                "BaseValue", "m_baseValue" })
                 {
-                    var maxProp = statType.GetProperty(maxName,
-                        Il2CppSystem.Reflection.BindingFlags.Public |
-                        Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                        Il2CppSystem.Reflection.BindingFlags.Instance);
+                    var maxProp = statType.GetProperty(maxName, flags);
                     if (maxProp != null)
                     {
                         var r = maxProp.GetValue(val, null);
-                        if (r != null) { max = Il2CppUnbox<float>(r); break; }
+                        if (r != null) { max = Il2CppUnbox<float>(r); foundMax = true; break; }
+                    }
+                    var maxField = statType.GetField(maxName, flags);
+                    if (maxField != null)
+                    {
+                        var r = maxField.GetValue(val);
+                        if (r != null) { max = Il2CppUnbox<float>(r); foundMax = true; break; }
                     }
                 }
-                Plugin.Log.LogInfo($"[Stat] {name} → current={current} max={max}");
+
+                // Dump what we found on the Stat object for diagnostics
+                if (!foundCurrent || !foundMax)
+                {
+                    var statFields = statType.GetFields(flags);
+                    var statFieldNames = new System.Collections.Generic.List<string>();
+                    foreach (var sf in statFields)
+                        statFieldNames.Add($"{sf.FieldType?.Name} {sf.Name}");
+                    Plugin.Log.LogInfo($"[Stat] {name} Stat type has fields: {string.Join(", ", statFieldNames)}");
+                }
+                Plugin.Log.LogInfo($"[Stat] {name} → current={current} (found={foundCurrent}) max={max} (found={foundMax})");
                 return;
             }
         }

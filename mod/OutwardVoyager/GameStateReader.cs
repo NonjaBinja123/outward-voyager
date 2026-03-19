@@ -20,6 +20,9 @@ public class GameStateReader
             SceneName = GetCurrentScene(),
             Player = playerState,
             NearbyDead = GetNearbyDead(playerPos),
+            NearbyInteractions = GetNearbyInteractions(playerPos),
+            Inventory = GetInventory(),
+            ScreenMessage = GetScreenMessage(),
             Timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
         };
     }
@@ -168,6 +171,155 @@ public class GameStateReader
         X = pos.x, Y = pos.y, Z = pos.z, Distance = dist,
     };
 
+    // ── Nearby interactions ─────────────────────────────────────────────────
+
+    private const float InteractionRadius = 6f;
+
+    private static List<NearbyInteractionEntry> GetNearbyInteractions(Vector3 playerPos)
+    {
+        var result = new List<NearbyInteractionEntry>();
+        try
+        {
+            var colliders = Physics.OverlapSphere(playerPos, InteractionRadius);
+            var seen = new HashSet<int>();
+
+            foreach (var col in colliders)
+            {
+                if (col == null) continue;
+                var root = col.transform.root.gameObject;
+                int id = root.GetInstanceID();
+                if (!seen.Add(id)) continue;
+
+                // Look for InteractionActivator on the root or any child
+                var activator = root.GetComponentInChildren<InteractionActivator>();
+                if (activator == null) continue;
+                if (!activator.gameObject.activeInHierarchy) continue;
+
+                var pos = root.transform.position;
+                float dist = FlatDistance(pos, playerPos);
+
+                // Attempt to read a label — try known field/property names via reflection
+                string label = TryGetInteractionLabel(activator) ?? root.name;
+
+                result.Add(new NearbyInteractionEntry
+                {
+                    Uid  = root.name,
+                    Label = label,
+                    Distance = (float)Math.Round(dist, 1),
+                    X = pos.x, Y = pos.y, Z = pos.z,
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"NearbyInteractions scan error: {ex.Message}");
+        }
+
+        result.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        return result;
+    }
+
+    private static string? TryGetInteractionLabel(Il2CppSystem.Object obj)
+    {
+        try
+        {
+            var type = obj.GetIl2CppType();
+            // Try common label property/field names in Outward's InteractionActivator
+            foreach (var propName in new[] { "InteractionTitle", "m_interactionTitle", "Title", "Label", "m_label" })
+            {
+                var prop = type.GetProperty(propName,
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                if (prop != null)
+                {
+                    var val = prop.GetValue(obj, null);
+                    if (val != null)
+                    {
+                        string s = val.ToString() ?? "";
+                        if (!string.IsNullOrWhiteSpace(s)) return s;
+                    }
+                }
+            }
+        }
+        catch { /* reflection failed — fall back to name */ }
+        return null;
+    }
+
+    // ── Inventory ────────────────────────────────────────────────────────────
+
+    private static InventoryState GetInventory()
+    {
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) return new InventoryState();
+
+            var inv = character.Inventory;
+            if (inv == null) return new InventoryState();
+
+            var pouchItems = new List<InventoryItemEntry>();
+
+            // Pouch (owned items container)
+            var pouch = inv.Pouch;
+            if (pouch != null)
+            {
+                var items = pouch.GetContainedItems();
+                if (items != null)
+                {
+                    foreach (var item in items)
+                    {
+                        if (item == null) continue;
+                        bool isFood = item.GetComponent<Food>() != null;
+                        bool isEquip = item is Equipment;
+                        int qty = 1;
+                        if (item is ItemContainer container)
+                            qty = container.ItemCount;
+
+                        pouchItems.Add(new InventoryItemEntry
+                        {
+                            Name     = item.DisplayName ?? item.name,
+                            ItemId   = item.ItemID,
+                            Quantity = qty,
+                            IsFood   = isFood,
+                            IsEquipment = isEquip,
+                        });
+                    }
+                }
+            }
+
+            // Equipped items via CharacterEquipment
+            var equipped = new EquippedItems();
+            var equip = inv.Equipment;
+            if (equip != null)
+            {
+                equipped.Weapon   = equip.GetEquippedItem(EquipmentSlot.EquipmentSlotIDs.RightHand)?.DisplayName ?? "";
+                equipped.OffHand  = equip.GetEquippedItem(EquipmentSlot.EquipmentSlotIDs.LeftHand)?.DisplayName ?? "";
+                equipped.Armor    = equip.GetEquippedItem(EquipmentSlot.EquipmentSlotIDs.Chest)?.DisplayName ?? "";
+                equipped.Helmet   = equip.GetEquippedItem(EquipmentSlot.EquipmentSlotIDs.Helmet)?.DisplayName ?? "";
+                equipped.Boots    = equip.GetEquippedItem(EquipmentSlot.EquipmentSlotIDs.Foot)?.DisplayName ?? "";
+            }
+
+            return new InventoryState { Pouch = pouchItems, Equipped = equipped };
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"Inventory read error: {ex.Message}");
+            return new InventoryState();
+        }
+    }
+
+    // ── Screen message ───────────────────────────────────────────────────────
+
+    private static string GetScreenMessage()
+    {
+        // TODO: DisplayMessageManager is not present in the IL2CPP interop assemblies.
+        // Screen message capture is skipped until the correct class name is confirmed
+        // in Assembly-CSharp. Candidates: DisplayMessageManager, NotificationPanel,
+        // ItemDisplayedManager. Add the correct type to the interop and re-enable here.
+        return "";
+    }
+
 }
 
 public class GameState
@@ -176,6 +328,9 @@ public class GameState
     [JsonPropertyName("scene")] public string SceneName { get; init; } = "";
     [JsonPropertyName("player")] public PlayerState Player { get; init; } = new();
     [JsonPropertyName("nearby_dead")] public List<NearbyDeadEntry> NearbyDead { get; init; } = new();
+    [JsonPropertyName("nearby_interactions")] public List<NearbyInteractionEntry> NearbyInteractions { get; init; } = new();
+    [JsonPropertyName("inventory")] public InventoryState Inventory { get; init; } = new();
+    [JsonPropertyName("screen_message")] public string ScreenMessage { get; init; } = "";
     [JsonPropertyName("timestamp")] public long Timestamp { get; init; }
 }
 
@@ -206,4 +361,38 @@ public class PlayerState
     [JsonPropertyName("camera_rotation_y")] public float CameraRotationY { get; init; }
     [JsonPropertyName("is_dead")] public bool IsDead { get; init; }
     [JsonPropertyName("in_combat")] public bool IsInCombat { get; init; }
+}
+
+public class NearbyInteractionEntry
+{
+    [JsonPropertyName("uid")]      public string Uid      { get; init; } = "";
+    [JsonPropertyName("label")]    public string Label    { get; init; } = "";
+    [JsonPropertyName("distance")] public float  Distance { get; init; }
+    [JsonPropertyName("x")]        public float  X        { get; init; }
+    [JsonPropertyName("y")]        public float  Y        { get; init; }
+    [JsonPropertyName("z")]        public float  Z        { get; init; }
+}
+
+public class InventoryState
+{
+    [JsonPropertyName("pouch")]    public List<InventoryItemEntry> Pouch    { get; init; } = new();
+    [JsonPropertyName("equipped")] public EquippedItems            Equipped { get; init; } = new();
+}
+
+public class InventoryItemEntry
+{
+    [JsonPropertyName("name")]         public string Name        { get; init; } = "";
+    [JsonPropertyName("item_id")]      public int    ItemId      { get; init; }
+    [JsonPropertyName("quantity")]     public int    Quantity    { get; init; } = 1;
+    [JsonPropertyName("is_food")]      public bool   IsFood      { get; init; }
+    [JsonPropertyName("is_equipment")] public bool   IsEquipment { get; init; }
+}
+
+public class EquippedItems
+{
+    [JsonPropertyName("weapon")]   public string Weapon  { get; set; } = "";
+    [JsonPropertyName("off_hand")] public string OffHand { get; set; } = "";
+    [JsonPropertyName("armor")]    public string Armor   { get; set; } = "";
+    [JsonPropertyName("helmet")]   public string Helmet  { get; set; } = "";
+    [JsonPropertyName("boots")]    public string Boots   { get; set; } = "";
 }

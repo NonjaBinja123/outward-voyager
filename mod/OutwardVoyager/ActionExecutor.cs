@@ -92,6 +92,15 @@ public class ActionExecutor
             case "take_item":
                 TakeItem(cmd.Params);
                 break;
+            case "use_item":
+                UseItem(cmd.Params);
+                break;
+            case "trigger_interaction":
+                TriggerInteraction(cmd.Params);
+                break;
+            case "equip_item":
+                EquipItem(cmd.Params);
+                break;
             default:
                 Plugin.Log.LogWarning($"Unknown action: {cmd.Action}");
                 SendError($"unknown action: {cmd.Action}");
@@ -313,6 +322,198 @@ public class ActionExecutor
             Plugin.Log.LogWarning($"[TakeItem] error: {ex.Message}");
             SendError($"take_item failed: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Use an item from the pouch by name (case-insensitive contains).
+    /// params: { "name": string }
+    /// </summary>
+    private void UseItem(Dictionary<string, object?> p)
+    {
+        string targetName = GetString(p, "name");
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) { SendError("no player character"); return; }
+
+            var pouch = character.Inventory?.Pouch;
+            if (pouch == null) { SendError("pouch not accessible"); return; }
+
+            var items = pouch.GetContainedItems();
+            Item? found = null;
+            foreach (var item in items)
+            {
+                if (item == null) continue;
+                string displayName = item.DisplayName ?? item.name;
+                if (displayName.Contains(targetName, StringComparison.OrdinalIgnoreCase) ||
+                    item.name.Contains(targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = item;
+                    break;
+                }
+            }
+
+            if (found == null)
+            {
+                Plugin.Log.LogInfo($"[UseItem] '{targetName}' not found in pouch.");
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "use_item", success = false, reason = "item_not_found" });
+                return;
+            }
+
+            // Try Use(), then UseItem() via reflection
+            bool ok = TryInvokeNoArgMethod(found, "Use");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "UseItem");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "OnUse");
+            Plugin.Log.LogInfo($"[UseItem] Use {found.name}: {(ok ? "ok" : "no method")}");
+            _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "use_item", success = ok, item = found.name });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[UseItem] error: {ex.Message}");
+            SendError($"use_item failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Trigger an interaction by UID, or the nearest InteractionActivator if UID is empty.
+    /// params: { "uid": string }
+    /// </summary>
+    private void TriggerInteraction(Dictionary<string, object?> p)
+    {
+        string targetUid = GetString(p, "uid");
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) { SendError("no player character"); return; }
+
+            var playerPos = character.transform.position;
+
+            InteractionActivator? found = null;
+            float nearestDist = float.MaxValue;
+
+            var colliders = Physics.OverlapSphere(playerPos, 10f);
+            foreach (var col in colliders)
+            {
+                if (col == null) continue;
+                var root = col.transform.root.gameObject;
+                var activator = root.GetComponentInChildren<InteractionActivator>();
+                if (activator == null || !activator.gameObject.activeInHierarchy) continue;
+
+                if (!string.IsNullOrEmpty(targetUid))
+                {
+                    if (!root.name.Equals(targetUid, StringComparison.OrdinalIgnoreCase)) continue;
+                    found = activator;
+                    break;
+                }
+
+                float dist = (root.transform.position - playerPos).magnitude;
+                if (dist < nearestDist) { nearestDist = dist; found = activator; }
+            }
+
+            if (found == null)
+            {
+                Plugin.Log.LogInfo($"[TriggerInteraction] No matching activator found.");
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "trigger_interaction", success = false, reason = "not_found" });
+                return;
+            }
+
+            bool ok = TryInvokeNoArgMethod(found, "Interact");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "OnInteract");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "TriggerActivation");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "Activate");
+            Plugin.Log.LogInfo($"[TriggerInteraction] Interact {found.name}: {(ok ? "ok" : "no method")}");
+            _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "trigger_interaction", success = ok, target = found.name });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[TriggerInteraction] error: {ex.Message}");
+            SendError($"trigger_interaction failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Equip an item from the pouch by name (case-insensitive contains).
+    /// params: { "name": string }
+    /// </summary>
+    private void EquipItem(Dictionary<string, object?> p)
+    {
+        string targetName = GetString(p, "name");
+        try
+        {
+            var character = CharacterManager.Instance?.GetFirstLocalCharacter();
+            if (character == null) { SendError("no player character"); return; }
+
+            var pouch = character.Inventory?.Pouch;
+            if (pouch == null) { SendError("pouch not accessible"); return; }
+
+            var items = pouch.GetContainedItems();
+            Item? found = null;
+            foreach (var item in items)
+            {
+                if (item == null) continue;
+                string displayName = item.DisplayName ?? item.name;
+                if (displayName.Contains(targetName, StringComparison.OrdinalIgnoreCase) ||
+                    item.name.Contains(targetName, StringComparison.OrdinalIgnoreCase))
+                {
+                    found = item;
+                    break;
+                }
+            }
+
+            if (found == null)
+            {
+                Plugin.Log.LogInfo($"[EquipItem] '{targetName}' not found in pouch.");
+                _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "equip_item", success = false, reason = "item_not_found" });
+                return;
+            }
+
+            // Try Equip() on the item directly, then TryEquip, then EquipItem on character
+            bool ok = TryInvokeNoArgMethod(found, "Equip");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "TryEquip");
+            if (!ok)
+            {
+                // Try character.Inventory.Equipment.Equip(item) via reflection
+                var equipComp = character.Inventory?.Equipment;
+                if (equipComp != null)
+                {
+                    ok = TryInvokeOneArgMethod(equipComp, "Equip", found);
+                    if (!ok) ok = TryInvokeOneArgMethod(equipComp, "EquipItem", found);
+                }
+            }
+            Plugin.Log.LogInfo($"[EquipItem] Equip {found.name}: {(ok ? "ok" : "no method")}");
+            _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "equip_item", success = ok, item = found.name });
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[EquipItem] error: {ex.Message}");
+            SendError($"equip_item failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Invoke a single-argument instance method via IL2CPP reflection.
+    /// Returns true if the method was found and invoked.
+    /// </summary>
+    private static bool TryInvokeOneArgMethod(Il2CppSystem.Object obj, string methodName, Il2CppSystem.Object arg)
+    {
+        try
+        {
+            var methods = obj.GetIl2CppType().GetMethods(
+                Il2CppSystem.Reflection.BindingFlags.Public |
+                Il2CppSystem.Reflection.BindingFlags.Instance);
+            foreach (var m in methods)
+            {
+                if (m.Name != methodName) continue;
+                if (m.GetParameters().Count != 1) continue;
+                m.Invoke(obj, new Il2CppSystem.Object[] { arg });
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Plugin.Log.LogWarning($"[Il2CppInvoke] {methodName} failed: {ex.Message}");
+        }
+        return false;
     }
 
     /// <summary>

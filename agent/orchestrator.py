@@ -133,6 +133,8 @@ Respond with ONLY a JSON object (no markdown, no extra text):
   "intent": "<action tag>",
   "reasoning": "<one sentence>",
   "direction": "<optional: north/south/east/west or null>",
+  "item": "<item name from inventory if intent is use_item/eat/equip, else null>",
+  "interaction_uid": "<uid from nearby_interactions if intent is interact, else null>",
   "chat": null
 }
 Be specific — use actual game state data. Explore freely when stats are healthy."""
@@ -175,6 +177,9 @@ class Orchestrator:
         self._nearby_interactions: list[dict] = []
         self._inventory: dict = {}
         self._screen_message: str = ""
+
+        # Prevent concurrent strategy runs from stepping on each other
+        self._strategy_lock = asyncio.Lock()
 
         # Navigation state tracking — lets agent know if it's actually moving
         self._is_navigating: bool = False
@@ -730,6 +735,12 @@ class Orchestrator:
                 logger.error(f"Strategy loop error: {e}")
 
     async def _run_strategy(self) -> None:
+        if self._strategy_lock.locked():
+            return  # a strategy cycle is already running — skip
+        async with self._strategy_lock:
+            await self._run_strategy_inner()
+
+    async def _run_strategy_inner(self) -> None:
         goal = self._goals.top_priority()
         recent = self._journal.recent(5)
         familiar = self._map.most_familiar(3)
@@ -860,24 +871,45 @@ Pending player messages: {self._pending_chat}"""
         if intent == "explore":
             await self._auto_explore(px, py, pz, decision.get("direction"))
         elif intent == "eat":
+            item_name = decision.get("item")
             pouch = self._inventory.get("pouch", [])
-            food = next((i for i in pouch if i.get("is_food")), None)
+            if item_name:
+                food = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
+            else:
+                food = next((i for i in pouch if i.get("is_food")), None)
             if food:
                 await self._game.use_item(food["name"])
                 logger.info(f"[Eat] Eating {food['name']}")
             else:
-                logger.info("[Eat] No food in pouch — switching to gather_food intent")
-                await self._auto_explore(px, py, pz, decision.get("direction"))
+                logger.info("[Eat] No food in pouch")
+        elif intent == "use_item":
+            item_name = decision.get("item")
+            pouch = self._inventory.get("pouch", [])
+            if item_name:
+                target = next((i for i in pouch if item_name.lower() in i["name"].lower()), None)
+                if target:
+                    if target.get("is_equipment"):
+                        await self._game.equip_item(target["name"])
+                        logger.info(f"[Equip] Equipping {target['name']}")
+                    else:
+                        await self._game.use_item(target["name"])
+                        logger.info(f"[Use] Using {target['name']}")
+                else:
+                    logger.info(f"[Use] Item '{item_name}' not found in pouch")
+            else:
+                logger.info("[Use] No item specified in decision")
         elif intent == "interact":
-            if self._nearby_interactions:
+            uid = decision.get("interaction_uid", "")
+            if not uid and self._nearby_interactions:
                 nearest = self._nearby_interactions[0]
                 uid = nearest.get("uid", "")
                 label = nearest.get("label", uid)
+                logger.info(f"[Interact] Triggering {label} (uid={uid})")
+            if uid:
                 await self._game.trigger_interaction(uid)
-                logger.info(f"[Interact] Triggering interaction with {label} (uid={uid})")
             else:
                 await self._game.interact(radius=3.0)
-                logger.info("[Interact] No nearby_interactions — falling back to proximity interact")
+                logger.info("[Interact] No uid — falling back to proximity interact")
         elif intent == "investigate":
             # If we have cached scan results with characters/items, walk to the closest
             interesting = [o for o in self._nearby_objects

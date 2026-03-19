@@ -27,7 +27,10 @@ class GameClient:
         while True:
             try:
                 self._ws = await websockets.connect(
-                    self._uri, ping_interval=None, ping_timeout=None
+                    self._uri,
+                    ping_interval=None,
+                    ping_timeout=None,
+                    max_size=10 * 1024 * 1024,  # 10 MB — scan payloads can be large
                 )
                 self._connected.set()
                 logger.info(f"Connected to game mod at {self._uri}")
@@ -36,6 +39,7 @@ class GameClient:
                 await self._receive_loop()
             except Exception as e:
                 self._connected.clear()
+                self._ws = None  # prevent stale sends while reconnecting
                 logger.warning(f"Game connection lost: {e}. Retrying in 5s...")
                 await asyncio.sleep(5)
 
@@ -54,9 +58,14 @@ class GameClient:
 
     async def send(self, action: str, params: dict[str, Any] | None = None) -> None:
         await self._connected.wait()
-        assert self._ws is not None
-        payload = json.dumps({"action": action, "params": params or {}})
-        await self._ws.send(payload)
+        if self._ws is None:
+            logger.warning(f"send({action}): no active connection, dropping")
+            return
+        try:
+            payload = json.dumps({"action": action, "params": params or {}})
+            await self._ws.send(payload)
+        except Exception as e:
+            logger.warning(f"send({action}) failed: {e}")
 
     async def request_state(self) -> None:
         await self.send("get_state")

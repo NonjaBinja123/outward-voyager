@@ -101,6 +101,9 @@ public class WebSocketServer
         catch (Exception ex)
         {
             Plugin.Log.LogWarning($"Send error: {ex.Message}");
+            // Abort so Python detects the disconnect and reconnects cleanly.
+            ws.Abort();
+            _client = null;
         }
         finally
         {

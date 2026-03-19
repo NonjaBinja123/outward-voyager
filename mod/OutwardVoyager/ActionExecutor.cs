@@ -833,18 +833,35 @@ public class ActionExecutor
                     }
                     else
                     {
-                        // Fall back: iterate via reflection — find any IList<Item> field
-                        var skType = (sk as Il2CppSystem.Object)!.GetIl2CppType();
-                        foreach (var fname in new[] { "m_learnedItems", "m_skills", "m_learnedSkills", "LearnedSkills" })
+                        // Fall back: find m_learnedItems (List<Skill>) via reflection and cast
+                        var skObj = sk as Il2CppSystem.Object;
+                        if (skObj != null)
                         {
-                            var f = skType.GetField(fname,
-                                Il2CppSystem.Reflection.BindingFlags.NonPublic |
-                                Il2CppSystem.Reflection.BindingFlags.Public |
-                                Il2CppSystem.Reflection.BindingFlags.Instance);
-                            if (f == null) continue;
-                            // Value is opaque — just log names; detailed parse skipped
-                            Plugin.Log.LogInfo($"[ReadSkills] Found field {fname} — complex type, skipping");
-                            break;
+                            var skType = skObj.GetIl2CppType();
+                            foreach (var fname in new[] { "m_learnedItems", "m_skills", "m_learnedSkills", "LearnedSkills" })
+                            {
+                                var f = skType.GetField(fname,
+                                    Il2CppSystem.Reflection.BindingFlags.NonPublic |
+                                    Il2CppSystem.Reflection.BindingFlags.Public |
+                                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                                if (f == null) continue;
+
+                                var fieldVal = f.GetValue(skObj);
+                                if (fieldVal == null) continue;
+
+                                // m_learnedItems is List<Skill>, and Skill extends Item
+                                var listOfItem = fieldVal.TryCast<Il2CppSystem.Collections.Generic.List<Item>>();
+                                if (listOfItem != null)
+                                {
+                                    items = listOfItem;
+                                    Plugin.Log.LogInfo($"[ReadSkills] {fname} cast to List<Item> succeeded: {items.Count} items");
+                                    break;
+                                }
+
+                                // Last resort: try as object list — count at least
+                                Plugin.Log.LogInfo($"[ReadSkills] {fname} found but List<Item> cast failed; skType={fieldVal.GetIl2CppType().Name}");
+                                break;
+                            }
                         }
                     }
 

@@ -61,7 +61,7 @@ public class GameStateReader
 
             float health = 0, maxHealth = 0, stamina = 0, maxStamina = 0, mana = 0, maxMana = 0;
             float food = 0, maxFood = 100, drink = 0, maxDrink = 100, sleep = 0, maxSleep = 100;
-            float bodyTemp = 20f;
+            float bodyTemp = 20f, corruption = 0f, maxCorruption = 100f;
 
             if (stats != null)
             {
@@ -75,12 +75,19 @@ public class GameStateReader
                 // Dump all field names on first read so we can see what's available
                 DumpStatFieldsOnce(stats);
 
-                // Survival needs — Outward stores these as Stat objects
-                // "water" is the internal name for drink needs in Outward
-                TryReadStat(stats, new[]{"m_foodNeeds","FoodNeeds","m_food","Food","m_hunger","Hunger"}, ref food, ref maxFood);
-                TryReadStat(stats, new[]{"m_waterNeeds","WaterNeeds","m_drinkNeeds","DrinkNeeds","m_water","Water","m_drink","Drink","m_thirst","Thirst"}, ref drink, ref maxDrink);
-                TryReadStat(stats, new[]{"m_sleepNeeds","SleepNeeds","m_sleep","Sleep","m_fatigue","Fatigue"}, ref sleep, ref maxSleep);
-                bodyTemp = TryReadFloat(stats, new[]{"BodyTemperature","m_bodyTemperature","Temperature","m_temperature"});
+                // Survival needs — runtime dump revealed exact field names:
+                // m_food / m_drink / m_sleep are plain Single (float) current values 0-100.
+                // m_maxFood / m_maxDrink / m_maxSleep are Stat objects; max is fixed 100 in vanilla.
+                food  = TryReadFloat(stats, new[]{"m_food"});
+                drink = TryReadFloat(stats, new[]{"m_drink"});
+                sleep = TryReadFloat(stats, new[]{"m_sleep"});
+                maxFood  = 100f;
+                maxDrink = 100f;
+                maxSleep = 100f;
+                bodyTemp   = TryReadFloat(stats, new[]{"m_temperature"});
+                corruption = TryReadFloat(stats, new[]{"m_corruptionLevel"});
+                maxCorruption = TryReadFloat(stats, new[]{"m_maxCorruption"});
+                if (maxCorruption <= 0) maxCorruption = 100f;
             }
 
             // Active status effects (burning, bleeding, poisoned, etc.)
@@ -110,6 +117,7 @@ public class GameStateReader
                 Drink       = drink,     MaxDrink    = maxDrink,
                 Sleep       = sleep,     MaxSleep    = maxSleep,
                 BodyTemperature = bodyTemp,
+                Corruption = corruption,   MaxCorruption = maxCorruption,
                 StatusEffects = statusEffects,
                 PositionX = pos.x, PositionY = pos.y, PositionZ = pos.z,
                 RotationY = rot.y,
@@ -547,6 +555,8 @@ public class PlayerState
     [JsonPropertyName("sleep")]            public float Sleep           { get; init; }
     [JsonPropertyName("max_sleep")]        public float MaxSleep        { get; init; }
     [JsonPropertyName("body_temperature")] public float BodyTemperature { get; init; }
+    [JsonPropertyName("corruption")]       public float Corruption      { get; init; }
+    [JsonPropertyName("max_corruption")]   public float MaxCorruption   { get; init; }
     [JsonPropertyName("status_effects")]   public List<string> StatusEffects { get; init; } = new();
     [JsonPropertyName("pos_x")]            public float PositionX       { get; init; }
     [JsonPropertyName("pos_y")]            public float PositionY       { get; init; }

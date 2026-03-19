@@ -93,3 +93,12 @@ class GameClient:
 
     async def set_autonomous(self, enabled: bool) -> None:
         await self.send("set_autonomous", {"enabled": enabled})
+
+    async def use_item(self, name: str) -> None:
+        await self.send("use_item", {"name": name})
+
+    async def trigger_interaction(self, uid: str = "") -> None:
+        await self.send("trigger_interaction", {"uid": uid})
+
+    async def equip_item(self, name: str) -> None:
+        await self.send("equip_item", {"name": name})

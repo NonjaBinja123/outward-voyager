@@ -121,7 +121,12 @@ Understanding the stats:
 - in_combat: true means actively fighting — survival first.
 - is_dead: true means you died — reflect briefly, then move on.
 
-Available intents: explore, gather_food, rest, interact, investigate, flee, trade, craft
+Available intents: explore, gather_food, eat, use_item, rest, interact, investigate, flee, trade, craft
+
+When to use eat/use_item:
+- Use "eat" when health or stamina is below 60% and food is available in inventory.
+- Use "use_item" for consumables and equipment actions.
+- Only rest if no food is available and stats are critically low.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
 {
@@ -167,6 +172,9 @@ class Orchestrator:
         self._game_state_path = Path("./data/game_state.json")
         self._scan_for_player: bool = False  # True only when player explicitly asked to look
         self._nearby_objects: list[dict] = []  # Last scan results (filtered)
+        self._nearby_interactions: list[dict] = []
+        self._inventory: dict = {}
+        self._screen_message: str = ""
 
         # Navigation state tracking — lets agent know if it's actually moving
         self._is_navigating: bool = False
@@ -216,6 +224,17 @@ class Orchestrator:
             )
         except Exception:
             pass
+
+        # Extract new state fields
+        self._nearby_interactions = msg.get("nearby_interactions", [])
+        self._inventory = msg.get("inventory", {})
+        new_screen_msg = msg.get("screen_message", "")
+        if new_screen_msg and new_screen_msg != self._screen_message:
+            self._screen_message = new_screen_msg
+            self._try_screen_message(new_screen_msg)
+        elif not new_screen_msg:
+            self._screen_message = ""
+
         scene = msg.get("scene", "unknown")
         player = msg.get("player", {})
         logger.debug(
@@ -663,6 +682,14 @@ class Orchestrator:
         self._nav_snapshot_time = time.time()
         await self._game.navigate_to(x, y, z, run=run)
 
+    def _try_screen_message(self, message: str) -> None:
+        """React when a new on-screen message appears."""
+        logger.info(f"[ScreenMsg] {message}")
+        # If it looks like a door/entrance prompt, add to strategy context
+        lower = message.lower()
+        if any(k in lower for k in ("enter", "door", "portal", "transition", "leave", "exit")):
+            self._pending_chat.append({"message": f"[Screen] {message}", "player": "system"})
+
     async def _on_nav_arrived(self, msg: dict) -> None:
         logger.info("[Nav] Arrived at destination.")
         self._is_navigating = False
@@ -740,8 +767,37 @@ class Orchestrator:
                     items.append(f"{label} ({dist}m)")
             nearby_summary = f"\nNearby objects: {', '.join(items)}"
 
+        # Nearby interactions summary
+        interactions_summary = ""
+        if self._nearby_interactions:
+            parts = [
+                f"{i.get('label', i.get('uid', '?'))} ({i.get('distance', '?')}m)"
+                for i in self._nearby_interactions[:5]
+            ]
+            interactions_summary = f"\nNearby interactions: {', '.join(parts)}"
+
+        # Inventory summary
+        inventory_summary = ""
+        pouch = self._inventory.get("pouch", [])
+        equipped = self._inventory.get("equipped", {})
+        if pouch:
+            food_items = [i["name"] for i in pouch if i.get("is_food")]
+            other_items = [i["name"] for i in pouch if not i.get("is_food")]
+            inv_parts = []
+            if food_items:
+                inv_parts.append(f"food: {', '.join(food_items[:5])}")
+            if other_items:
+                inv_parts.append(f"items: {', '.join(other_items[:5])}")
+            inventory_summary = f"\nInventory — {'; '.join(inv_parts)}"
+        if equipped:
+            eq_parts = [f"{k}: {v}" for k, v in equipped.items() if v]
+            if eq_parts:
+                inventory_summary += f"\nEquipped: {', '.join(eq_parts)}"
+
+        screen_msg_summary = f"\nScreen message: {self._screen_message}" if self._screen_message else ""
+
         user_msg = f"""Current state:
-{state_summary}{nearby_summary}
+{state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{screen_msg_summary}
 
 Active goal: {goal.description if goal else 'none'}
 Recent journal: {recent}
@@ -803,6 +859,25 @@ Pending player messages: {self._pending_chat}"""
 
         if intent == "explore":
             await self._auto_explore(px, py, pz, decision.get("direction"))
+        elif intent == "eat":
+            pouch = self._inventory.get("pouch", [])
+            food = next((i for i in pouch if i.get("is_food")), None)
+            if food:
+                await self._game.use_item(food["name"])
+                logger.info(f"[Eat] Eating {food['name']}")
+            else:
+                logger.info("[Eat] No food in pouch — switching to gather_food intent")
+                await self._auto_explore(px, py, pz, decision.get("direction"))
+        elif intent == "interact":
+            if self._nearby_interactions:
+                nearest = self._nearby_interactions[0]
+                uid = nearest.get("uid", "")
+                label = nearest.get("label", uid)
+                await self._game.trigger_interaction(uid)
+                logger.info(f"[Interact] Triggering interaction with {label} (uid={uid})")
+            else:
+                await self._game.interact(radius=3.0)
+                logger.info("[Interact] No nearby_interactions — falling back to proximity interact")
         elif intent == "investigate":
             # If we have cached scan results with characters/items, walk to the closest
             interesting = [o for o in self._nearby_objects
@@ -831,9 +906,29 @@ Pending player messages: {self._pending_chat}"""
         "northwest": 7 * math.pi / 4,
     }
 
+    _ITEM_NAME_RE = re.compile(r"^\d{7}_", re.ASCII)  # e.g. 5300120_, 4100030_
+
     async def _auto_explore(self, px: float, py: float, pz: float,
                             direction: str | None = None) -> None:
-        """Pick an exploration target and walk there."""
+        """Pick an exploration target and walk there.
+
+        If there are uncollected item-like objects nearby (names starting with
+        digit prefixes like 5300120_), navigate to the closest one instead of
+        picking a random direction.
+        """
+        # Check for nearby items to collect before exploring randomly
+        item_objects = [
+            o for o in self._nearby_objects
+            if self._ITEM_NAME_RE.match(o.get("name", "")) and not o.get("has_character")
+        ]
+        if item_objects:
+            target = item_objects[0]  # already sorted by distance
+            tx = float(target.get("x", px))
+            tz = float(target.get("z", pz))
+            await self._navigate_to(tx, py, tz, run=False)
+            logger.info(f"[Nav] Moving toward nearby item {target.get('name')} at ({tx:.1f}, {tz:.1f})")
+            return
+
         dist = random.uniform(15.0, 40.0)
 
         if direction and direction.lower() in self._CARDINAL_ANGLES:

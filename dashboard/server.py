@@ -245,6 +245,62 @@ def get_keybindings() -> JSONResponse:
     return JSONResponse(bindings)
 
 
+# ── Identity endpoints (Phase 7) ──────────────────────────────────────────────
+
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).parent / "backend"))
+try:
+    from identity import IdentityManager as _IdentityManager
+    _identity = _IdentityManager(str(DATA_DIR))
+except Exception:
+    _identity = None  # type: ignore[assignment]
+
+
+@app.get("/api/identity")
+def get_identities() -> JSONResponse:
+    """All known user identities."""
+    if _identity is None:
+        return JSONResponse({"error": "identity manager unavailable"})
+    from dataclasses import asdict
+    return JSONResponse([asdict(u) for u in _identity.all_identities()])
+
+
+@app.get("/api/identity/{user_id}")
+def get_identity(user_id: str) -> JSONResponse:
+    if _identity is None:
+        return JSONResponse({"error": "identity manager unavailable"})
+    u = _identity.get_by_id(user_id)
+    if u is None:
+        raise HTTPException(status_code=404, detail="not found")
+    from dataclasses import asdict
+    return JSONResponse(asdict(u))
+
+
+class IdentityLinkRequest(BaseModel):
+    user_id_a: str
+    user_id_b: str
+
+
+@app.post("/api/identity/link")
+def link_identities(body: IdentityLinkRequest) -> JSONResponse:
+    """Merge two identity records into one."""
+    if _identity is None:
+        return JSONResponse({"error": "identity manager unavailable"})
+    from dataclasses import asdict
+    merged = _identity.link(body.user_id_a, body.user_id_b)
+    return JSONResponse(asdict(merged))
+
+
+@app.get("/api/tunnel")
+def get_tunnel_url() -> JSONResponse:
+    """Public tunnel URL if cloudflared is running."""
+    url_file = DATA_DIR / "tunnel_url.txt"
+    if url_file.exists():
+        url = url_file.read_text(encoding="utf-8").strip()
+        return JSONResponse({"url": url, "active": bool(url)})
+    return JSONResponse({"url": None, "active": False})
+
+
 # ── Game stream ──────────────────────────────────────────────────────────────
 # Dedicated background thread captures frames; WebSocket pushes them to browser.
 
@@ -365,7 +421,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
 <header>
   <h1>Outward Voyager</h1>
   <span class="badge" id="status-badge">connecting...</span>
-  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v11</span>
+  <span style="font-size:0.72rem;color:#555;background:#0d1117;padding:2px 8px;border-radius:4px;font-family:monospace">build: 2026-03-19 v12</span>
   <input id="player-name" placeholder="Your name" title="Your display name in chat"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 8px;color:#e6edf3;font-size:0.8rem;width:120px"
     oninput="localStorage.setItem('voy_name',this.value)">

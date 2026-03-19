@@ -388,6 +388,13 @@ public class ActionExecutor
             {
                 ok = TryInvokeOneArgMethod(character, "UseItem", found);
                 if (!ok) ok = TryInvokeOneArgMethod(character, "Use", found);
+                if (!ok) ok = TryInvokeOneArgMethod(character, "Interact", found);
+            }
+
+            // Try CharacterInventory.UseItem(item)
+            if (!ok && character.Inventory != null)
+            {
+                ok = TryInvokeOneArgMethod(character.Inventory, "UseItem", found);
             }
 
             // Try Food component: food.OnEat(character) or similar
@@ -398,8 +405,24 @@ public class ActionExecutor
                 {
                     ok = TryInvokeOneArgMethod(foodComp, "OnEat", character);
                     if (!ok) ok = TryInvokeOneArgMethod(foodComp, "Consume", character);
+                    if (!ok) ok = TryInvokeOneArgMethod(foodComp, "ApplyEffect", character);
                     if (!ok) ok = TryInvokeNoArgMethod(foodComp, "Use");
                 }
+            }
+
+            // Last resort: dump Character methods for future diagnosis
+            if (!ok)
+            {
+                var charType = (character as Il2CppSystem.Object)!.GetIl2CppType();
+                var methods = charType.GetMethods(
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                var useRelated = new System.Collections.Generic.List<string>();
+                foreach (var m in methods)
+                    if (m.Name.ToLower().Contains("use") || m.Name.ToLower().Contains("item") ||
+                        m.Name.ToLower().Contains("consume") || m.Name.ToLower().Contains("eat"))
+                        useRelated.Add(m.Name);
+                Plugin.Log.LogInfo($"[UseItem] Character methods containing use/item/consume/eat: {string.Join(", ", useRelated)}");
             }
 
             Plugin.Log.LogInfo($"[UseItem] Use {found.name}: {(ok ? "ok" : "no method found")}");

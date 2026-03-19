@@ -19,11 +19,13 @@ public class NavigationController : MonoBehaviour
 
     private Vector3 _lastPos;
     private float _stuckTime;
+    private float _navStartTime;
 
     private const float ArrivalDistance = 2.5f;
     private const float NavUpdateInterval = 3.0f;
     private const float StuckTimeLimit = 2.0f;
     private const float StuckMoveThreshold = 0.1f;
+    private const float StuckGracePeriod = 0.5f;  // ignore stuck check for first 0.5s after SetTarget
 
     private float _lastUpdateTime;
 
@@ -34,6 +36,7 @@ public class NavigationController : MonoBehaviour
         _target = target;
         _run = run;
         _stuckTime = 0f;
+        _navStartTime = Time.time;
 
         var character = CharacterManager.Instance?.GetFirstLocalCharacter();
         _lastPos = character?.transform.position ?? Vector3.zero;
@@ -77,9 +80,9 @@ public class NavigationController : MonoBehaviour
             return;
         }
 
-        // Stuck detection
+        // Stuck detection — skip for the first grace period after SetTarget
         float moved = Vector3.Distance(pos, _lastPos) / Time.deltaTime;
-        if (moved < StuckMoveThreshold)
+        if (Time.time - _navStartTime > StuckGracePeriod && moved < StuckMoveThreshold)
         {
             _stuckTime += Time.deltaTime;
             if (_stuckTime >= StuckTimeLimit)

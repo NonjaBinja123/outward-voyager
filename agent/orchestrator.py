@@ -68,6 +68,12 @@ _MOVE_RE = re.compile(
     r"|\b(forward|back(?:ward)?|left|right|north|south|east|west)\b.{0,10}\b(go|move|walk|run)\b",
     re.IGNORECASE,
 )
+# Matches directionless wander requests: "walk around", "wander", "explore", "move around"
+_WANDER_RE = re.compile(
+    r"\b(walk|wander|roam|explore|move)\s*(around|about|randomly|freely)?\b"
+    r"|\bjust\s+(walk|move|go)\b",
+    re.IGNORECASE,
+)
 _DIRECTION_RE = re.compile(
     r"\b(forward|back(?:ward)?|left|right|north|south|east|west)\b",
     re.IGNORECASE,
@@ -278,6 +284,8 @@ class Orchestrator:
                 continue
             if await self._try_move(message):
                 continue
+            if await self._try_wander(message):
+                continue
             await self._respond_to_chat(message, "Josh")
 
     async def _on_chat(self, msg: dict) -> None:
@@ -298,6 +306,8 @@ class Orchestrator:
         if await self._try_stop(message):
             return
         if await self._try_move(message):
+            return
+        if await self._try_wander(message):
             return
 
         # Respond to all other chat via LLM immediately
@@ -488,6 +498,38 @@ class Orchestrator:
         await self._game.say(reply)
         self._log_chat("voyager", reply)
         logger.info(f"[Nav] Player-commanded move {direction}: ({px:.1f},{pz:.1f}) → ({tx:.1f},{tz:.1f})")
+        return True
+
+    async def _try_wander(self, message: str) -> bool:
+        """Handle directionless walk requests: 'walk around', 'wander', 'explore'. Picks a random direction."""
+        if not _WANDER_RE.search(message):
+            return False
+        # Don't intercept if a specific direction was already given (_try_move handles those)
+        if _DIRECTION_RE.search(message):
+            return False
+
+        player = self._current_state.get("player", {})
+        px = float(player.get("pos_x", 0))
+        py = float(player.get("pos_y", 0))
+        pz = float(player.get("pos_z", 0))
+
+        if not player or (px == 0.0 and py == 0.0 and pz == 0.0):
+            await self._game.say("I don't have position data yet.")
+            return True
+
+        direction = random.choice(["north", "south", "east", "west"])
+        offsets = {"north": (0, _MOVE_STEP), "south": (0, -_MOVE_STEP),
+                   "east": (_MOVE_STEP, 0), "west": (-_MOVE_STEP, 0)}
+        dx, dz = offsets[direction]
+        tx, tz = px + dx, pz + dz
+
+        run = bool(_RUN_RE.search(message))
+        await self._game.navigate_to(tx, py, tz, run=run)
+        verb = "Running" if run else "Moving"
+        reply = f"{verb} {direction}."
+        await self._game.say(reply)
+        self._log_chat("voyager", reply)
+        logger.info(f"[Nav] Wander {direction}: ({px:.1f},{pz:.1f}) → ({tx:.1f},{tz:.1f})")
         return True
 
     # Only hard-filter pure engine internals — never physical world objects

@@ -168,7 +168,8 @@ class Orchestrator:
         self._game = GameClient(ws_cfg["host"], ws_cfg["port"])
         self._llm = LLMRouter(config["llm"])
         self._db = SkillDatabase(config["skills"]["db_path"])
-        self._composer = SkillComposer(self._db)
+        self._game_id: str = config.get("game", {}).get("game_id", "outward_definitive")
+        self._composer = SkillComposer(self._db, game_id=self._game_id)
         mem_cfg = config["memory"]
         self._journal = AdventureJournal(mem_cfg["chroma_path"], mem_cfg["journal_collection"])
         goal_cfg = config["goals"]

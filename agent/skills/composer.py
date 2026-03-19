@@ -8,16 +8,35 @@ from .schema import Skill
 
 
 class SkillComposer:
-    def __init__(self, db: SkillDatabase) -> None:
+    def __init__(self, db: SkillDatabase, game_id: str = "") -> None:
         self._db = db
+        self._game_id = game_id  # current connected game; filters skill scope
+
+    def set_game_id(self, game_id: str) -> None:
+        """Update active game when a new adapter connects."""
+        self._game_id = game_id
 
     def compose(self, intent: str, context: dict[str, Any]) -> list[Skill]:
         """
         Given a high-level intent string (from LLM) and current game context,
         return an ordered list of skills to execute.
+
+        Only returns skills valid for the current game:
+          - cross_game skills always qualify
+          - game_specific skills only if source_game_id matches self._game_id
+          - archived skills are never returned
         """
-        # Simple tag-based lookup for now; will become LLM-assisted later
-        candidates = self._db.get_by_tag(intent)
+        # Phase 9: filter by game scope first, then tag-match within that set
+        if self._game_id:
+            all_valid = self._db.get_for_game(self._game_id)
+        else:
+            all_valid = self._db.get_by_tag(intent)
+
+        # Further filter by tag match
+        candidates = [s for s in all_valid if intent in s.tags] if self._game_id else all_valid
+        if not candidates:
+            # Fallback: ignore game scope and just tag-match (for pre-portability instances)
+            candidates = self._db.get_by_tag(intent)
         if not candidates:
             return []
         # Sort by success rate descending

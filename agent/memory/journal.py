@@ -55,17 +55,47 @@ class AdventureJournal:
             ids=[entry_id],
         )
 
-    def recall(self, query: str, n: int = 5, scene: str | None = None) -> list[str]:
-        """Semantic search over journal entries."""
+    def recall(self, query: str, n: int = 5, scene: str | None = None,
+               game_id: str | None = None, exclude_game_id: str | None = None,
+               ) -> list[str]:
+        """
+        Semantic search over journal entries.
+
+        Args:
+            query:            Text query for embedding search.
+            n:                Max results to return.
+            scene:            If set, filter to this scene only.
+            game_id:          If set, filter to entries from this game only.
+            exclude_game_id:  If set, exclude entries from this game (returns cross-game memories).
+        """
         if self._col is None:
             return []
-        where = {"scene": scene} if scene else None
-        results = self._col.query(
-            query_texts=[query],
-            n_results=n,
-            where=where,
-        )
-        return results["documents"][0] if results["documents"] else []
+
+        # Build ChromaDB where clause
+        where: dict | None = None
+        filters = []
+        if scene:
+            filters.append({"scene": {"$eq": scene}})
+        if game_id:
+            filters.append({"game_id": {"$eq": game_id}})
+        if exclude_game_id:
+            filters.append({"game_id": {"$ne": exclude_game_id}})
+        if len(filters) == 1:
+            where = filters[0]
+        elif len(filters) > 1:
+            where = {"$and": filters}
+
+        try:
+            results = self._col.query(
+                query_texts=[query],
+                n_results=n,
+                where=where,
+            )
+            return results["documents"][0] if results["documents"] else []
+        except Exception:
+            # ChromaDB raises if where filter returns no candidates — fall back to no filter
+            results = self._col.query(query_texts=[query], n_results=n)
+            return results["documents"][0] if results["documents"] else []
 
     def recent(self, n: int = 10) -> list[str]:
         if self._col is None:

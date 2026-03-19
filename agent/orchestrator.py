@@ -1030,24 +1030,17 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
         """
         Phase 9 — inject cross-game memories from previous game instances.
 
-        Queries the journal for entries tagged with game_id != current game_id.
-        Only included if at least one prior-game entry exists.
+        Queries the journal for entries NOT from the current game_id.
         Returns a formatted string (possibly empty) for strategy prompt injection.
         """
         try:
-            # Use semantic search for high-level prior-life experiences
-            all_recent = self._journal.recent(20)
-            # Filter journal metadata to find cross-game entries (game_id != current)
-            # Since journal.recent() only returns text, we do a broad query instead
             prior_docs = self._journal.recall(
-                "memorable experience in a previous world or game",
+                "memorable experience in a previous world",
                 n=3,
+                exclude_game_id=self._game_id if self._game_id else None,
             )
             if not prior_docs:
                 return ""
-            # Only inject if we have cross-game content (can't easily filter without metadata)
-            # For now inject all prior recall — will naturally return cross-game content
-            # once the agent has played multiple games
             lines = "\n".join(f"  - {d[:120]}" for d in prior_docs)
             return f"\n\nPrior-life memories (from previous worlds):\n{lines}"
         except Exception:

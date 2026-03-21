@@ -468,6 +468,10 @@ class LLMRouter:
             "stream": False,
             "options": {"num_predict": max_tokens},
         }
+        # Per-provider thinking toggle (qwen3 models support this)
+        # think: false gives the full token budget to content instead of CoT
+        if "think" in cfg:
+            payload["think"] = cfg["think"]
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{url}/api/chat", json=payload,

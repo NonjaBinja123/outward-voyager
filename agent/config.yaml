@@ -19,12 +19,12 @@ llm:
   daily_limit_usd: 3.0
 
   task_routing:
-    chat:     [ollama_fast, gemini, openai, claude_haiku]
-    reactive: [ollama_fast, gemini, gemini_lite, openai, claude_haiku]
-    strategy: [ollama, gemini_pro, claude, openai_full]
-    code:     [gemini_pro, claude, claude_opus, openai_full, ollama]
-    scan:     [ollama_fast, gemini, openai]
-    vision:   [ollama_vision, gemini]
+    chat:     [ollama_fast, ollama]
+    reactive: [ollama_fast, ollama]
+    strategy: [ollama, ollama_fast]
+    code:     [ollama, ollama_fast]
+    scan:     [ollama_fast, ollama]
+    vision:   [ollama_vision, ollama_fast]
 
   providers:
     # ── Local — RTX 5070 Ti (16GB VRAM) ──────────────────────────────────
@@ -41,8 +41,10 @@ llm:
       base_url: http://localhost:11434
       model: qwen3:4b
       enabled: true
-      # qwen3 thinking mode: leave enabled — thinking goes to separate field, content is clean JSON
-      # With think:false, model reasons verbosely in content instead, which is harder to parse
+      think: false  # Disable CoT for 4B model — full token budget goes to JSON output
+      # think:true causes qwen3:4b to burn the token budget on reasoning, leaving only
+      # fragments for the JSON response (observed: "wait" 4-char outputs, truncated JSON)
+      # qwen3:14b (ollama provider) keeps think:true for strategy sessions
 
     # Vision: qwen2.5vl:7b — excellent at reading UI text and screenshots (~5GB VRAM)
     # Pull with: ollama pull qwen2.5vl:7b

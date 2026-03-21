@@ -80,6 +80,9 @@ class Orchestrator:
         self._pending_chat: list[str] = []
         # Last N dispatched actions — shown to LLM so it doesn't repeat itself
         self._recent_actions: deque[str] = deque(maxlen=5)
+        # Track how many times each UID has been attempted via trigger_interaction.
+        # Cleared on scene change. UIDs tried 3+ times are shown as "stuck" to the LLM.
+        self._interaction_attempts: dict[str, int] = {}
 
         # ── Wire together ─────────────────────────────────────────────────
         self._state.on_delta(self._bus.on_state_delta)
@@ -168,6 +171,9 @@ class Orchestrator:
             self._map.visit(scene)
         # Feed into StateManager — computes delta, fires delta handlers → EventBus
         delta = self._state.update(msg)
+        # Clear interaction attempt counts when entering a new scene
+        if delta.scene_changed:
+            self._interaction_attempts.clear()
         # Navigation stuck check
         is_stuck, px, py, pz = self._state.check_stuck()
         if is_stuck:
@@ -269,6 +275,11 @@ class Orchestrator:
                 name = a.get("action", "")
                 params = a.get("params", {})
                 self._recent_actions.append(f"{name}({params})")
+                # Track trigger_interaction attempts per UID
+                if name == "trigger_interaction":
+                    uid = params.get("uid", "")
+                    if uid:
+                        self._interaction_attempts[uid] = self._interaction_attempts.get(uid, 0) + 1
 
         # Agent self-requests strategy session
         if result.get("request_strategy"):
@@ -291,9 +302,17 @@ class Orchestrator:
         goal = self._goals.top_priority()
         active_goals = [goal.description] if goal else []
         recent_texts = self._journal.recent(5)
-        extra = ""
+        extra_parts = []
         if self._recent_actions:
-            extra = "RECENTLY ATTEMPTED: " + ", ".join(self._recent_actions)
+            extra_parts.append("RECENTLY ATTEMPTED: " + ", ".join(self._recent_actions))
+        # UIDs tried 3+ times with no state change — tell the LLM to stop
+        stuck = [uid for uid, n in self._interaction_attempts.items() if n >= 3]
+        if stuck:
+            extra_parts.append(
+                "STUCK INTERACTIONS (tried 3+ times, NO effect — do NOT attempt these again): "
+                + ", ".join(stuck)
+            )
+        extra = "\n".join(extra_parts)
         return Observation(
             state=self._state.current,
             recent_journal=recent_texts,

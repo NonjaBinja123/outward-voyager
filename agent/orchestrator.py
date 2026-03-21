@@ -72,6 +72,7 @@ class Orchestrator:
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._connected: bool = False
+        self._last_scan_time: float = 0.0
         # Pending player chat messages waiting to be included in next think()
         self._pending_chat: list[str] = []
 
@@ -129,7 +130,7 @@ class Orchestrator:
         self._loading_screen_active = False
         await self._game.set_autonomous(self._autonomous)
         await self._game.read_skills()
-        await self._game.scan_nearby(radius=40.0)
+        await self._scan_scene()
         asyncio.create_task(self._read_screen())
         # Delay first think by 3s so at least one game_state arrives first
         async def _delayed_start():
@@ -189,6 +190,7 @@ class Orchestrator:
 
     async def _on_nav_arrived(self, msg: dict) -> None:
         self._state.set_arrived()
+        await self._scan_scene()
         self._bus.on_nav_arrived()
 
     async def _on_nav_failed(self, msg: dict) -> None:
@@ -212,11 +214,16 @@ class Orchestrator:
 
     # ── EventBus handler — the one place brain is called ─────────────────────
 
+    _SCAN_INTERVAL: float = 60.0  # seconds between automatic re-scans
+
     async def _on_event(self, event: GameEvent) -> None:
         """All LLM calls flow through here."""
         if not self._connected:
             logger.debug(f"[Orch] Skipping event {event.name!r} — game not connected")
             return
+        # Refresh scene scan if stale — agent's view of the world needs to move with him
+        if time.time() - self._last_scan_time > self._SCAN_INTERVAL:
+            await self._scan_scene()
         obs = self._build_observation()
         result = await self._brain.think(event, obs)
         if not result:
@@ -276,6 +283,13 @@ class Orchestrator:
             pending_chat=list(self._pending_chat),
             scene_objects=self._state.nearby_objects,
         )
+
+    # ── Scene scanning ────────────────────────────────────────────────────────
+
+    async def _scan_scene(self, radius: float = 40.0) -> None:
+        """Issue a scan_nearby to refresh the agent's view of the surrounding area."""
+        self._last_scan_time = time.time()
+        await self._game.scan_nearby(radius=radius)
 
     # ── Screen reading ────────────────────────────────────────────────────────
 

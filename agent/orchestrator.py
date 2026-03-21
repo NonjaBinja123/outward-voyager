@@ -30,6 +30,7 @@ from skills.composer import SkillComposer
 from skills.database import SkillDatabase
 from skills.schema import Skill
 from keybinding_learner import KeybindingLearner
+from screen_reader import ScreenReader
 from social.memory import SocialMemoryManager
 from social.relationships import RelationshipEngine
 
@@ -134,20 +135,22 @@ Understanding the stats:
 - is_dead: true means you died — reflect briefly, then move on.
 
 Survival priorities (only when below 50%):
-- Food low → intent: eat (if food in inventory) or gather_food
-- Drink low → intent: drink (consume water/drink item from inventory)
+- Food low → intent: eat ONLY if "food:" list is non-empty. Otherwise: gather_food or explore.
+- Drink low → intent: drink ONLY if "items:" list has water/flask/potion. Otherwise: explore to find water.
 - Sleep low → intent: sleep (find a bed or campfire)
 - Health low + food available → intent: eat
 - Health low + no food → intent: rest or flee
+- IMPORTANT: Non-food items (seaweed, rocks, quest items) cannot be eaten or drunk. Do not attempt.
 
 Available intents: explore, gather_food, eat, drink, sleep, use_item, rest, interact,
                    investigate, open_menu, flee, trade, craft
 
 Use open_menu when: player asks to open a menu, or you want to read your skills/equipment.
   menu values: "inventory", "skills", "map", "equipment", "quest"
-Use interact when there is something in nearby_interactions worth triggering.
-Use investigate when there are nearby objects or characters worth approaching.
-When stats are healthy (all above 50%): freely explore and interact with the world.
+Use interact when there is something in nearby_interactions worth triggering — PREFER this over explore.
+Use investigate when there are nearby objects or characters worth approaching — PREFER this over explore.
+Use explore ONLY when there are no nearby interactions, no characters to approach, and stats are healthy.
+  Do NOT pick explore when nearby_interactions or characters are listed above — go to them instead.
 
 Respond with ONLY a JSON object (no markdown, no extra text):
 {
@@ -159,7 +162,7 @@ Respond with ONLY a JSON object (no markdown, no extra text):
   "menu": "<menu name if intent is open_menu, else null>",
   "chat": null
 }
-Be specific — use actual game state data. Explore freely when stats are healthy."""
+Be specific — use actual game state data."""
 
 
 class Orchestrator:
@@ -178,7 +181,8 @@ class Orchestrator:
         self._reward = RewardEngine("./data")
         self._combat = CombatLearner("./data")
         self._sandbox = SandboxExecutor("./data")
-        self._keybindings = KeybindingLearner("./data")
+        self._keybindings = KeybindingLearner("./data", llm_complete_vision=self._llm.complete_vision)
+        self._screen_reader = ScreenReader(self._llm)
         self._social = SocialMemoryManager("./data/social_memory.jsonl")
         self._relationships = RelationshipEngine("./data/relationships.json")
 
@@ -222,10 +226,14 @@ class Orchestrator:
         self._session_start: float = time.time()
         self._session_cycles: int = 0
 
+        # Screen reader state
+        self._loading_screen_active: bool = False
+
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Wire up game event handlers
         self._game.on("connected", self._on_connected)
+        self._game.on("disconnected", self._on_disconnected)
         self._game.on("game_state", self._on_game_state)
         self._game.on("chat", self._on_chat)
         self._game.on("ack", self._on_ack)
@@ -247,13 +255,54 @@ class Orchestrator:
 
     async def _on_connected(self, _msg: dict) -> None:
         """Sync autonomous mode flag, scan, and kick off first strategy immediately."""
+        self._loading_screen_active = False  # scene loaded — stop screenshot polling
         await self._game.set_autonomous(self._autonomous_movement)
         logger.info(f"Synced autonomous_movement={self._autonomous_movement} to mod")
         await self._game.read_skills()
         # Scan immediately so the first strategy call has nearby objects to reason about
         await self._game.scan_nearby(radius=40.0)
+        # Take a screenshot right on connect — may still catch tail end of loading screen
+        asyncio.create_task(self._read_screen_and_learn(force=True))
         # Fire first strategy decision now — don't make the agent sit idle for 10s
         asyncio.create_task(self._run_strategy())
+
+    async def _on_disconnected(self, _msg: dict) -> None:
+        """Game disconnected — start polling screenshots to capture loading screen tips."""
+        self._loading_screen_active = True
+        asyncio.create_task(self._loading_screen_watcher())
+
+    async def _loading_screen_watcher(self) -> None:
+        """Take screenshots every 2 seconds while disconnected (loading screen is showing)."""
+        logger.info("[Screen] Scene transition detected — watching for loading screen tips")
+        while self._loading_screen_active:
+            await self._read_screen_and_learn(force=True)
+            await asyncio.sleep(2.0)
+
+    async def _read_screen_and_learn(self, force: bool = False) -> None:
+        """Take screenshot, extract text, store tips and update keybindings."""
+        try:
+            data = await self._screen_reader.read_screen(min_interval=0.0 if force else 8.0)
+            if not data:
+                return
+            # Store new loading tips in the journal as permanent game knowledge
+            new_tips = self._screen_reader.new_tips(data)
+            for tip in new_tips:
+                logger.info(f"[Screen] New loading tip: {tip}")
+                self._journal.add(JournalEntry(
+                    scene="loading_screen",
+                    event_type="game_tip",
+                    description=tip,
+                    emotional_tag="curious",
+                ))
+            # Update keybinding learner from interaction hints
+            for hint in self._screen_reader.interaction_hints(data):
+                self._keybindings.record_observation(hint["action"], hint["key"])
+            # Log anything else useful
+            all_text = data.get("all_text", "").strip()
+            if all_text:
+                logger.debug(f"[Screen] Visible text: {all_text[:200]}")
+        except Exception as e:
+            logger.warning(f"[Screen] _read_screen_and_learn error: {e}")
 
     async def _on_game_state(self, msg: dict) -> None:
         prev_state = self._current_state
@@ -882,8 +931,8 @@ class Orchestrator:
                 if cycle % 10 == 0:  # Read skills + save LLM usage every ~5 minutes
                     await self._game.read_skills()
                     self._llm.save_usage()
-                if cycle % 20 == 0:  # Vision keybinding discovery every ~10 minutes
-                    asyncio.create_task(self._keybindings.discover_from_screenshot())
+                # Screen reading: read on every cycle (8s min-interval enforced inside)
+                asyncio.create_task(self._read_screen_and_learn())
             except Exception as e:
                 logger.error(f"Strategy loop error: {e}")
 
@@ -1245,8 +1294,6 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
 
         if intent == "explore":
             direction = decision.get("direction")
-            dir_label = direction or "somewhere new"
-            await self._game.say(f"Heading {dir_label}.")
             await self._auto_explore(px, py, pz, direction)
         elif intent in ("eat", "drink"):
             item_name = decision.get("item")
@@ -1393,11 +1440,48 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
                             direction: str | None = None) -> None:
         """Pick an exploration target and walk there.
 
-        If there are uncollected item-like objects nearby (names starting with
-        digit prefixes like 5300120_), navigate to the closest one instead of
-        picking a random direction.
+        Priority order:
+        1. Nearby interactions within 30m (NPCs, doors, interactables)
+        2. Uncollected items (digit-prefixed names like 5300120_)
+        3. Directional walk (LLM hint or random)
         """
-        # Check for nearby items to collect before exploring randomly
+        # 1. Navigate toward nearby interactions (6m radius, from game_state)
+        if self._nearby_interactions:
+            npc_keywords = ("npc", "villager", "merchant", "guard", "innkeeper", "door", "gate", "chest")
+            prioritized = sorted(
+                self._nearby_interactions,
+                key=lambda i: (
+                    0 if any(k in i.get("label", "").lower() for k in npc_keywords) else 1,
+                    float(i.get("distance", 999))
+                )
+            )
+            target = prioritized[0]
+            uid = target.get("uid", "")
+            label = target.get("label", uid)
+            dist = target.get("distance", "?")
+            tx = float(target.get("x", 0.0)) or px
+            tz = float(target.get("z", 0.0)) or pz
+            self._pending_interact_uid = uid
+            await self._navigate_to(tx, py, tz, run=False)
+            logger.info(f"[Explore] Moving toward interaction: {label} ({dist}m)")
+            return
+
+        # 1b. Navigate toward living NPCs from scan results (30m radius)
+        npc_objects = [
+            o for o in self._nearby_objects
+            if o.get("has_character") and not o.get("is_dead")
+        ]
+        if npc_objects:
+            target = npc_objects[0]  # sorted by distance
+            tx = float(target.get("x", px))
+            tz = float(target.get("z", pz))
+            label = target.get("name", "character")
+            dist = target.get("distance", "?")
+            await self._navigate_to(tx, py, tz, run=False)
+            logger.info(f"[Explore] Moving toward NPC: {label} ({dist}m)")
+            return
+
+        # 2. Check for nearby items to collect
         item_objects = [
             o for o in self._nearby_objects
             if self._ITEM_NAME_RE.match(o.get("name", "")) and not o.get("has_character")
@@ -1410,10 +1494,10 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
             logger.info(f"[Nav] Moving toward nearby item {target.get('name')} at ({tx:.1f}, {tz:.1f})")
             return
 
+        # 3. Directional walk (LLM hint or random)
         dist = random.uniform(15.0, 40.0)
 
         if direction and direction.lower() in self._CARDINAL_ANGLES:
-            # LLM suggested a direction — use it with slight randomness
             base_angle = self._CARDINAL_ANGLES[direction.lower()]
             angle = base_angle + random.uniform(-0.3, 0.3)
         else:

@@ -19,6 +19,7 @@ llm:
     strategy: [claude, gemini_pro, openai_full, ollama]  # Best reasoning + JSON
     code:     [claude_opus, claude, gemini_pro, openai_full, ollama]  # Highest quality
     scan:     [gemini, openai, ollama]  # Simple translation, high volume
+    vision:   [gemini, ollama_vision, claude_haiku]  # Screenshot reading — Gemini free tier first
 
   providers:
     # ── Local (always available, no API key) ─────────────────────────────
@@ -29,6 +30,14 @@ llm:
       # model: qwen3:14b          # Better reasoning — needs ~10GB VRAM
       # model: llama3.1:70b       # Near-cloud quality — needs ~40GB VRAM
       enabled: true
+
+    # Vision-capable Ollama model (for screenshot reading). Free, runs locally.
+    # Pull with: ollama pull moondream2   (~1.8GB — fast, good at text/UI reading)
+    # Or:        ollama pull llava        (~4GB — better general vision)
+    ollama_vision:
+      base_url: http://localhost:11434
+      model: moondream2
+      enabled: false             # Enable after: ollama pull moondream2
 
     # ── Anthropic Claude ─────────────────────────────────────────────────
     # API key: https://console.anthropic.com → Settings → API Keys

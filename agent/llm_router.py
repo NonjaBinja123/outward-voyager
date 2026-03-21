@@ -34,15 +34,16 @@ _API_KEY_VARS: dict[str, str] = {
 
 # Maps config name → which backend implementation to use
 _BACKEND: dict[str, str] = {
-    "claude":       "claude",
-    "claude_haiku": "claude",
-    "claude_opus":  "claude",
-    "openai":       "openai",
-    "openai_full":  "openai",
-    "gemini":       "gemini",
-    "gemini_lite":  "gemini",
-    "gemini_pro":   "gemini",
-    "ollama":       "ollama",
+    "claude":        "claude",
+    "claude_haiku":  "claude",
+    "claude_opus":   "claude",
+    "openai":        "openai",
+    "openai_full":   "openai",
+    "gemini":        "gemini",
+    "gemini_lite":   "gemini",
+    "gemini_pro":    "gemini",
+    "ollama":        "ollama",
+    "ollama_vision": "ollama",   # same Ollama backend, vision-capable model
 }
 
 # Cost per 1K tokens (input, output) in USD — for tracking only
@@ -135,6 +136,127 @@ class LLMRouter:
         return self._stats[name]
 
     # ── Public API ──────────────────────────────────────────────────────────
+
+    async def complete_vision(
+        self,
+        system: str,
+        user: str,
+        img_bytes: bytes,
+        task: str = "vision",
+        max_tokens: int = 1024,
+    ) -> str:
+        """Route a vision completion (text + image) to the best available provider.
+
+        Task "vision" prefers gemini → ollama_vision → claude_haiku by default.
+        Falls back to the text-only complete() if no vision provider succeeds.
+        """
+        import base64
+        img_b64 = base64.b64encode(img_bytes).decode()
+
+        providers = self._select_providers(task)
+        for name in providers:
+            cfg = self._providers.get(name, {})
+            stats = self._get_stats(name)
+
+            if stats.consecutive_failures >= 3:
+                cooldown = min(300, 30 * stats.consecutive_failures)
+                if time.time() - stats.last_failure < cooldown:
+                    continue
+            if name not in ("ollama", "ollama_vision") and stats.calls_this_minute >= 50:
+                continue
+
+            backend = _BACKEND.get(name, name)
+            if backend not in ("gemini", "ollama", "claude"):
+                continue  # backend doesn't support vision
+
+            try:
+                response = await self._call_vision(name, cfg, backend, system, user, img_b64, img_bytes, max_tokens)
+                # Images count roughly as 300 tokens (Gemini) to 1500 (Claude) — use 500 as estimate
+                stats.record_call((len(system) + len(user)) // 4 + 500, len(response) // 4)
+                logger.info(f"LLM [{task}/vision] response from {name} ({len(response)} chars)")
+                return response
+            except Exception as e:
+                stats.record_failure()
+                logger.warning(f"LLM vision provider {name} failed: {e}, trying next...")
+
+        logger.error(f"All vision LLM providers failed for task={task}")
+        return ""
+
+    async def _call_vision(
+        self, name: str, cfg: dict, backend: str,
+        system: str, user: str, img_b64: str, img_bytes: bytes, max_tokens: int,
+    ) -> str:
+        match backend:
+            case "gemini":
+                return await self._gemini_vision(cfg, system, user, img_bytes, max_tokens)
+            case "ollama":
+                return await self._ollama_vision(cfg, system, user, img_b64, max_tokens)
+            case "claude":
+                return await self._claude_vision(cfg, system, user, img_b64, max_tokens)
+            case _:
+                raise ValueError(f"Backend '{backend}' does not support vision")
+
+    async def _gemini_vision(self, cfg: dict, system: str, user: str, img_bytes: bytes, max_tokens: int) -> str:
+        from google import genai
+        from google.genai import types
+        api_key = os.environ.get("GOOGLE_API_KEY", "")
+        client = genai.Client(api_key=api_key)
+        model_name = cfg.get("model", "gemini-2.5-flash")
+        image_part = types.Part.from_bytes(data=img_bytes, mime_type="image/png")
+        text_part = types.Part(text=user)
+        resp = await asyncio.to_thread(
+            client.models.generate_content,
+            model=model_name,
+            contents=[image_part, text_part],
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                max_output_tokens=max_tokens,
+            ),
+        )
+        text = resp.text
+        if not text:
+            raise ValueError("Gemini returned empty vision response")
+        return text
+
+    async def _ollama_vision(self, cfg: dict, system: str, user: str, img_b64: str, max_tokens: int) -> str:
+        import aiohttp
+        url = cfg.get("base_url", "http://localhost:11434")
+        model = cfg.get("model", "moondream2")
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user, "images": [img_b64]},
+            ],
+            "stream": False,
+            "options": {"num_predict": max_tokens},
+        }
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{url}/api/chat", json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as r:
+                r.raise_for_status()
+                data = await r.json()
+                return data["message"]["content"]
+
+    async def _claude_vision(self, cfg: dict, system: str, user: str, img_b64: str, max_tokens: int) -> str:
+        import anthropic
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        client = anthropic.AsyncAnthropic(api_key=api_key)
+        msg = await client.messages.create(
+            model=cfg.get("model", "claude-haiku-4-5-20251001"),
+            max_tokens=max_tokens,
+            system=system,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img_b64}},
+                    {"type": "text", "text": user},
+                ],
+            }],
+        )
+        return msg.content[0].text
 
     async def complete(
         self,

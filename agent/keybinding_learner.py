@@ -106,10 +106,17 @@ class Binding:
 
 
 class KeybindingLearner:
-    def __init__(self, data_dir: str = "./data") -> None:
+    def __init__(self, data_dir: str = "./data", llm_complete_vision=None) -> None:
+        """
+        llm_complete_vision: optional async callable matching LLMRouter.complete_vision
+            signature (system, user, img_bytes, task) -> str.
+            When provided, vision discovery uses the router (prefers Gemini/Ollama).
+            When None, falls back to the direct Anthropic SDK if ANTHROPIC_API_KEY is set.
+        """
         self._path = Path(data_dir) / "keybindings.json"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._bindings: dict[str, Binding] = {}
+        self._complete_vision = llm_complete_vision
         self._api_key = os.environ.get("ANTHROPIC_API_KEY", "")
 
         # Load defaults first (lowest confidence)
@@ -151,15 +158,28 @@ class KeybindingLearner:
         Returns list of newly discovered (or confirmed) bindings.
         Updates internal state and persists if anything new is found.
         """
-        if not self._api_key:
-            logger.debug("[Keybindings] No ANTHROPIC_API_KEY — vision discovery skipped")
+        if not self._complete_vision and not self._api_key:
+            logger.debug("[Keybindings] No vision provider available — discovery skipped")
             return []
 
         try:
             img_bytes = await asyncio.to_thread(self._capture_screen)
             if not img_bytes:
                 return []
-            result = await asyncio.to_thread(self._ask_vision, img_bytes)
+            if self._complete_vision:
+                raw = await self._complete_vision(
+                    system="You read game screenshots and extract keyboard shortcut hints.",
+                    user=_VISION_PROMPT,
+                    img_bytes=img_bytes,
+                    task="vision",
+                )
+                raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()
+                try:
+                    result = json.loads(raw)
+                except json.JSONDecodeError:
+                    result = {"bindings": [], "notes": raw[:100]}
+            else:
+                result = await asyncio.to_thread(self._ask_vision, img_bytes)
             discovered = []
             changed = False
             for entry in result.get("bindings", []):

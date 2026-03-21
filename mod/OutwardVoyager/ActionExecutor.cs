@@ -406,32 +406,63 @@ public class ActionExecutor
                 Plugin.Log.LogInfo($"[UseItem] OnUseItem({itemUid ?? "null"}) → ok={ok}");
             }
 
-            // Try Food component: food.OnEat(character) or similar
+            // Try Food component — try all plausible method names including Eat(Character)
             if (!ok)
             {
                 var foodComp = found.GetComponentInChildren<Food>();
                 if (foodComp != null)
                 {
-                    ok = TryInvokeOneArgMethod(foodComp, "OnEat", character);
+                    ok = TryInvokeOneArgMethod(foodComp, "Eat", character);
+                    if (!ok) ok = TryInvokeOneArgMethod(foodComp, "OnEat", character);
                     if (!ok) ok = TryInvokeOneArgMethod(foodComp, "Consume", character);
                     if (!ok) ok = TryInvokeOneArgMethod(foodComp, "ApplyEffect", character);
+                    if (!ok) ok = TryInvokeOneArgMethod(foodComp, "ExecuteEffect", character);
+                    if (!ok) ok = TryInvokeOneArgMethod(foodComp, "ExecuteEffects", character);
                     if (!ok) ok = TryInvokeNoArgMethod(foodComp, "Use");
+                    if (!ok) ok = TryInvokeNoArgMethod(foodComp, "Eat");
+                    Plugin.Log.LogInfo($"[UseItem] Food component found, ok={ok}");
+                    if (!ok)
+                    {
+                        // Dump ALL food component methods for diagnosis
+                        var foodType = (foodComp as Il2CppSystem.Object)!.GetIl2CppType();
+                        var foodMethods = foodType.GetMethods(
+                            Il2CppSystem.Reflection.BindingFlags.Public |
+                            Il2CppSystem.Reflection.BindingFlags.Instance);
+                        var names = new System.Collections.Generic.List<string>();
+                        foreach (var m in foodMethods) names.Add(m.Name);
+                        Plugin.Log.LogInfo($"[UseItem] All Food methods: {string.Join(", ", names)}");
+                    }
+                }
+                else
+                {
+                    Plugin.Log.LogInfo($"[UseItem] No Food component on {found.name}");
                 }
             }
 
-            // Last resort: dump Character methods for future diagnosis
+            // Try character quick-slot-style use and eat helpers
+            if (!ok) ok = TryInvokeOneArgMethod(character, "EatItem", found);
+            if (!ok) ok = TryInvokeNoArgMethod(found, "QuickSlotUse");
+            if (!ok) ok = TryInvokeNoArgMethod(found, "OnQuickSlotActivated");
+
+            // Last resort: dump ALL Character methods for diagnosis
             if (!ok)
             {
                 var charType = (character as Il2CppSystem.Object)!.GetIl2CppType();
                 var methods = charType.GetMethods(
                     Il2CppSystem.Reflection.BindingFlags.Public |
                     Il2CppSystem.Reflection.BindingFlags.Instance);
-                var useRelated = new System.Collections.Generic.List<string>();
-                foreach (var m in methods)
-                    if (m.Name.ToLower().Contains("use") || m.Name.ToLower().Contains("item") ||
-                        m.Name.ToLower().Contains("consume") || m.Name.ToLower().Contains("eat"))
-                        useRelated.Add(m.Name);
-                Plugin.Log.LogInfo($"[UseItem] Character methods containing use/item/consume/eat: {string.Join(", ", useRelated)}");
+                var all = new System.Collections.Generic.List<string>();
+                foreach (var m in methods) all.Add(m.Name);
+                Plugin.Log.LogInfo($"[UseItem] ALL Character methods ({all.Count}): {string.Join(", ", all)}");
+
+                // Also dump Item's own methods
+                var itemType = (found as Il2CppSystem.Object)!.GetIl2CppType();
+                var itemMethods = itemType.GetMethods(
+                    Il2CppSystem.Reflection.BindingFlags.Public |
+                    Il2CppSystem.Reflection.BindingFlags.Instance);
+                var itemNames = new System.Collections.Generic.List<string>();
+                foreach (var m in itemMethods) itemNames.Add(m.Name);
+                Plugin.Log.LogInfo($"[UseItem] ALL Item methods ({itemNames.Count}): {string.Join(", ", itemNames)}");
             }
 
             Plugin.Log.LogInfo($"[UseItem] Use {found.name}: {(ok ? "ok" : "no method found")}");

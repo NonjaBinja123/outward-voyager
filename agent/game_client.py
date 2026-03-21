@@ -41,6 +41,11 @@ class GameClient:
                 self._connected.clear()
                 self._ws = None  # prevent stale sends while reconnecting
                 logger.warning(f"Game connection lost: {e}. Retrying in 5s...")
+                for handler in self._handlers.get("disconnected", []):
+                    try:
+                        await handler({})
+                    except Exception:
+                        pass
                 await asyncio.sleep(5)
 
     async def _receive_loop(self) -> None:

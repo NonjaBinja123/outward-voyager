@@ -17,7 +17,7 @@ llm:
   task_routing:
     chat:     [gemini, openai, claude_haiku, ollama]      # Cheap + fast
     reactive: [gemini, gemini_lite, openai, claude_haiku, ollama]  # Event-driven decisions — fast + cheap
-    strategy: [claude, gemini_pro, openai_full, ollama]   # Deep reflection — best reasoning
+    strategy: [gemini_pro, claude, openai_full, ollama]   # Deep reflection — best reasoning
     code:     [claude_opus, claude, gemini_pro, openai_full, ollama]  # Highest quality
     scan:     [gemini, openai, ollama]  # Simple translation, high volume
     vision:   [gemini, ollama_vision, claude_haiku]  # Screenshot reading — Gemini free tier first

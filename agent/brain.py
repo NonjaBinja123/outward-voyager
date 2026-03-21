@@ -127,10 +127,11 @@ class Brain:
         system = self._build_system(strategy=use_strategy)
         user = self._build_user(event, obs)
         task = "strategy" if use_strategy else "reactive"
+        max_tokens = 2048 if use_strategy else 1024
 
         logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
         try:
-            raw = await self._llm.complete(system, user, task=task)
+            raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
         except Exception as e:
             logger.warning(f"[Brain] LLM call failed: {e}")
             return None

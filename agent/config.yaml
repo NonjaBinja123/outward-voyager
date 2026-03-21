@@ -19,30 +19,35 @@ llm:
   daily_limit_usd: 3.0
 
   task_routing:
-    chat:     [gemini, openai, claude_haiku, ollama]      # Cheap + fast
-    reactive: [gemini, gemini_lite, openai, claude_haiku, ollama]  # Event-driven decisions — fast + cheap
-    strategy: [gemini_pro, claude, openai_full, ollama]   # Deep reflection — best reasoning
-    code:     [claude_opus, claude, gemini_pro, openai_full, ollama]  # Highest quality
-    scan:     [gemini, openai, ollama]  # Simple translation, high volume
-    vision:   [gemini, ollama_vision, claude_haiku]  # Screenshot reading — Gemini free tier first
+    chat:     [ollama_fast, gemini, openai, claude_haiku]
+    reactive: [ollama_fast, gemini, gemini_lite, openai, claude_haiku]
+    strategy: [ollama, gemini_pro, claude, openai_full]
+    code:     [gemini_pro, claude, claude_opus, openai_full, ollama]
+    scan:     [ollama_fast, gemini, openai]
+    vision:   [ollama_vision, gemini]
 
   providers:
-    # ── Local (always available, no API key) ─────────────────────────────
+    # ── Local — RTX 5070 Ti (16GB VRAM) ──────────────────────────────────
+    # Strategy + reactive: qwen3:14b — best reasoning/JSON at 14B, fits in ~9GB VRAM
+    # Pull with: ollama pull qwen3:14b
     ollama:
       base_url: http://localhost:11434
-      model: llama3.1:8b         # Pull with: ollama pull llama3.1:8b
-      # Upgrade options (if you have VRAM):
-      # model: qwen3:14b          # Better reasoning — needs ~10GB VRAM
-      # model: llama3.1:70b       # Near-cloud quality — needs ~40GB VRAM
+      model: qwen3:14b
       enabled: true
 
-    # Vision-capable Ollama model (for screenshot reading). Free, runs locally.
-    # Pull with: ollama pull moondream2   (~1.8GB — fast, good at text/UI reading)
-    # Or:        ollama pull llava        (~4GB — better general vision)
+    # Fast reactive: qwen3:4b — very fast for moment-to-moment decisions (~3GB VRAM)
+    # Pull with: ollama pull qwen3:4b
+    ollama_fast:
+      base_url: http://localhost:11434
+      model: qwen3:4b
+      enabled: true
+
+    # Vision: qwen2.5vl:7b — excellent at reading UI text and screenshots (~5GB VRAM)
+    # Pull with: ollama pull qwen2.5vl:7b
     ollama_vision:
       base_url: http://localhost:11434
-      model: moondream2
-      enabled: false             # Enable after: ollama pull moondream2
+      model: qwen2.5vl:7b
+      enabled: true
 
     # ── Anthropic Claude ─────────────────────────────────────────────────
     # API key: https://console.anthropic.com → Settings → API Keys

@@ -44,7 +44,8 @@ _BACKEND: dict[str, str] = {
     "gemini_lite":   "gemini",
     "gemini_pro":    "gemini",
     "ollama":        "ollama",
-    "ollama_vision": "ollama",   # same Ollama backend, vision-capable model
+    "ollama_fast":   "ollama",   # fast small model for reactive/chat
+    "ollama_vision": "ollama",   # vision-capable model for screenshots
 }
 
 # Cost per 1K tokens (input, output) in USD — for tracking only
@@ -156,7 +157,7 @@ class LLMRouter:
         return total
 
     def _is_paid(self, name: str) -> bool:
-        return name not in ("ollama", "ollama_vision")
+        return _BACKEND.get(name) != "ollama"
 
     # ── Public API ──────────────────────────────────────────────────────────
 

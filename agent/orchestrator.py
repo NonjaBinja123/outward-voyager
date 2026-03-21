@@ -131,7 +131,6 @@ class Orchestrator:
         await self._game.set_autonomous(self._autonomous)
         await self._game.read_skills()
         await self._scan_scene()
-        asyncio.create_task(self._read_screen())
         # Delay first think by 3s so at least one game_state arrives first
         async def _delayed_start():
             await asyncio.sleep(3.0)
@@ -294,12 +293,14 @@ class Orchestrator:
     # ── Screen reading ────────────────────────────────────────────────────────
 
     async def _loading_screen_watcher(self) -> None:
+        """Fire vision reads only while the game is actually disconnected (loading screen)."""
         logger.info("[Screen] Scene transition — watching for loading screen tips")
         attempts = 0
-        while self._loading_screen_active and attempts < 12:  # max ~2 min
+        while self._loading_screen_active and not self._connected and attempts < 12:
             await self._read_screen()
             await asyncio.sleep(10.0)
             attempts += 1
+        logger.info("[Screen] Loading screen watcher stopped")
 
     async def _read_screen(self) -> None:
         try:

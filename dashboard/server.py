@@ -578,6 +578,7 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   </div>
   <div class="card" id="card-llm">
     <h2>LLM Usage</h2>
+    <div id="llm-daily" style="margin-bottom:8px;font-size:0.9rem;font-weight:bold"></div>
     <div id="llm-body" style="font-size:0.82rem">
       <span style="color:#8b949e">No usage data yet</span>
     </div>
@@ -821,20 +822,33 @@ async function refreshGameState() {
 async function refreshLLMUsage() {
   const data = await fetchJSON('/api/llm_usage');
   const el = document.getElementById('llm-body');
-  if (!data || !Object.keys(data).length) {
+  const daily = document.getElementById('llm-daily');
+  if (!data || (!data.providers && !Object.keys(data).length)) {
     el.innerHTML = '<span style="color:#8b949e">No usage data yet</span>';
     return;
   }
-  const rows = Object.entries(data).map(([name, info]) => {
-    const cost = info.est_cost_usd > 0 ? `$${info.est_cost_usd.toFixed(4)}` : 'free';
+  // Daily spend banner
+  const daySpend = data.daily_total_usd ?? 0;
+  const dayLimit = data.daily_limit_usd ?? 3;
+  const alltime = data.alltime_total_usd ?? 0;
+  const pct = dayLimit > 0 ? daySpend / dayLimit : 0;
+  const capColor = pct >= 1.0 ? '#f85149' : pct >= 0.8 ? '#e3b341' : '#3fb950';
+  daily.innerHTML = `Today: <span style="color:${capColor}">$${daySpend.toFixed(4)}</span> / $${dayLimit.toFixed(2)} cap &nbsp;|&nbsp; All-time: $${alltime.toFixed(4)}`;
+
+  // Per-provider table
+  const providers = data.providers ?? data;
+  const rows = Object.entries(providers).map(([name, info]) => {
+    const allCost = info.est_cost_usd > 0 ? `$${info.est_cost_usd.toFixed(4)}` : 'free';
+    const dayCost = info.daily_cost_usd > 0 ? `$${info.daily_cost_usd.toFixed(4)}` : '-';
     return `<tr>
       <td style="color:#58a6ff">${name}</td>
       <td>${info.calls}</td>
       <td style="color:${info.failures > 0 ? '#f85149' : '#3fb950'}">${info.failures}</td>
-      <td>${cost}</td>
+      <td>${dayCost}</td>
+      <td style="color:#8b949e">${allCost}</td>
     </tr>`;
   }).join('');
-  el.innerHTML = `<table><thead><tr><th>Provider</th><th>Calls</th><th>Fails</th><th>Est. Cost</th></tr></thead>
+  el.innerHTML = `<table><thead><tr><th>Provider</th><th>Calls</th><th>Fails</th><th>Today</th><th>All-time</th></tr></thead>
     <tbody>${rows}</tbody></table>`;
 }
 

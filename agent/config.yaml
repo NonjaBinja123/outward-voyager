@@ -14,6 +14,10 @@ llm:
   # code:     Python skill generation. Needs best accuracy. Called rarely.
   # scan:     Translating game object names to English. Simple, high frequency.
 
+  # Hard daily spend cap — when reached, all paid APIs are skipped and ollama is used.
+  # Set to 0 to disable the cap. Resets at midnight.
+  daily_limit_usd: 3.0
+
   task_routing:
     chat:     [gemini, openai, claude_haiku, ollama]      # Cheap + fast
     reactive: [gemini, gemini_lite, openai, claude_haiku, ollama]  # Event-driven decisions — fast + cheap

@@ -14,6 +14,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -68,24 +69,23 @@ class ProviderStats:
     failures: int = 0
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    daily_input_tokens: int = 0
+    daily_output_tokens: int = 0
     last_call: float = 0.0
     last_failure: float = 0.0
     calls_this_minute: int = 0
     minute_start: float = 0.0
     consecutive_failures: int = 0
 
-    @property
-    def estimated_cost_usd(self) -> float:
-        return 0.0  # Computed by router with provider name
-
     def record_call(self, input_tokens: int = 0, output_tokens: int = 0) -> None:
         now = time.time()
         self.calls += 1
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
+        self.daily_input_tokens += input_tokens
+        self.daily_output_tokens += output_tokens
         self.last_call = now
         self.consecutive_failures = 0
-        # Rate tracking
         if now - self.minute_start > 60:
             self.calls_this_minute = 0
             self.minute_start = now
@@ -104,6 +104,8 @@ class LLMRouter:
         self._stats: dict[str, ProviderStats] = {}
         self._usage_path = Path("./data/llm_usage.json")
         self._usage_path.parent.mkdir(parents=True, exist_ok=True)
+        self._daily_limit_usd: float = config.get("daily_limit_usd", 3.0)
+        self._today: str = date.today().isoformat()
 
         # Build set of available providers based on config + API key presence
         self._available: set[str] = set()
@@ -135,6 +137,27 @@ class LLMRouter:
             self._stats[name] = ProviderStats()
         return self._stats[name]
 
+    def _reset_daily_if_needed(self) -> None:
+        today = date.today().isoformat()
+        if today != self._today:
+            self._today = today
+            for stats in self._stats.values():
+                stats.daily_input_tokens = 0
+                stats.daily_output_tokens = 0
+            logger.info(f"[LLM] Daily spend reset for {today}")
+            self.save_usage()
+
+    def _daily_spend_usd(self) -> float:
+        total = 0.0
+        for name, stats in self._stats.items():
+            cost_in, cost_out = _COST_PER_1K.get(name, (0.0, 0.0))
+            total += (stats.daily_input_tokens / 1000 * cost_in
+                      + stats.daily_output_tokens / 1000 * cost_out)
+        return total
+
+    def _is_paid(self, name: str) -> bool:
+        return name not in ("ollama", "ollama_vision")
+
     # ── Public API ──────────────────────────────────────────────────────────
 
     async def complete_vision(
@@ -153,16 +176,22 @@ class LLMRouter:
         import base64
         img_b64 = base64.b64encode(img_bytes).decode()
 
+        self._reset_daily_if_needed()
+        daily = self._daily_spend_usd()
+
         providers = self._select_providers(task)
         for name in providers:
             cfg = self._providers.get(name, {})
             stats = self._get_stats(name)
 
+            if self._is_paid(name) and daily >= self._daily_limit_usd:
+                continue
+
             if stats.consecutive_failures >= 3:
                 cooldown = min(300, 30 * stats.consecutive_failures)
                 if time.time() - stats.last_failure < cooldown:
                     continue
-            if name not in ("ollama", "ollama_vision") and stats.calls_this_minute >= 50:
+            if self._is_paid(name) and stats.calls_this_minute >= 50:
                 continue
 
             backend = _BACKEND.get(name, name)
@@ -171,9 +200,13 @@ class LLMRouter:
 
             try:
                 response = await self._call_vision(name, cfg, backend, system, user, img_b64, img_bytes, max_tokens)
-                # Images count roughly as 300 tokens (Gemini) to 1500 (Claude) — use 500 as estimate
                 stats.record_call((len(system) + len(user)) // 4 + 500, len(response) // 4)
-                logger.info(f"LLM [{task}/vision] response from {name} ({len(response)} chars)")
+                daily = self._daily_spend_usd()
+                logger.info(
+                    f"LLM [{task}/vision] {name} ({len(response)} chars) "
+                    f"| today ${daily:.4f} / ${self._daily_limit_usd:.2f}"
+                )
+                self.save_usage()
                 return response
             except Exception as e:
                 stats.record_failure()
@@ -274,31 +307,53 @@ class LLMRouter:
             task: Task type — "chat", "strategy", or "code". Affects provider
                   selection when multiple are available.
         """
+        self._reset_daily_if_needed()
+        daily = self._daily_spend_usd()
+        if daily >= self._daily_limit_usd:
+            logger.warning(
+                f"[LLM] Daily cap ${self._daily_limit_usd:.2f} reached "
+                f"(spent ${daily:.4f}) — paid APIs disabled, using ollama only"
+            )
+
         providers = self._select_providers(task)
 
         for name in providers:
             cfg = self._providers.get(name, {})
             stats = self._get_stats(name)
 
+            # Hard daily cap — skip all paid providers
+            if self._is_paid(name) and daily >= self._daily_limit_usd:
+                continue
+
+            # Warn at 80% of daily limit
+            if self._is_paid(name) and daily >= self._daily_limit_usd * 0.8:
+                logger.warning(
+                    f"[LLM] Approaching daily cap: ${daily:.4f} / ${self._daily_limit_usd:.2f}"
+                )
+
             # Back off if provider is failing repeatedly
             if stats.consecutive_failures >= 3:
                 cooldown = min(300, 30 * stats.consecutive_failures)
                 if time.time() - stats.last_failure < cooldown:
-                    logger.debug(f"Skipping {name} — {stats.consecutive_failures} consecutive failures, cooling down")
+                    logger.debug(f"Skipping {name} — cooling down after {stats.consecutive_failures} failures")
                     continue
 
             # Rate limit guard (conservative: 50 calls/minute for APIs)
-            if name != "ollama" and stats.calls_this_minute >= 50:
+            if self._is_paid(name) and stats.calls_this_minute >= 50:
                 logger.debug(f"Skipping {name} — rate limit guard (50/min)")
                 continue
 
             try:
                 response = await self._call(name, cfg, system, user, max_tokens)
-                # Estimate tokens (rough: 1 token ≈ 4 chars)
                 est_input = (len(system) + len(user)) // 4
                 est_output = len(response) // 4
                 stats.record_call(est_input, est_output)
-                logger.info(f"LLM [{task}] response from {name} ({len(response)} chars)")
+                daily = self._daily_spend_usd()  # refresh after call
+                logger.info(
+                    f"LLM [{task}] {name} ({len(response)} chars) "
+                    f"| today ${daily:.4f} / ${self._daily_limit_usd:.2f}"
+                )
+                self.save_usage()
                 return response
             except Exception as e:
                 stats.record_failure()
@@ -309,21 +364,34 @@ class LLMRouter:
 
     def get_usage_summary(self) -> dict[str, Any]:
         """Return usage stats for dashboard/logging."""
-        summary: dict[str, Any] = {}
+        providers: dict[str, Any] = {}
+        daily_total = 0.0
+        alltime_total = 0.0
         for name, stats in self._stats.items():
-            cost_in, cost_out = _COST_PER_1K.get(name, _COST_PER_1K.get(_BACKEND.get(name, ""), (0, 0)))
-            est_cost = (
-                stats.total_input_tokens / 1000 * cost_in
-                + stats.total_output_tokens / 1000 * cost_out
-            )
-            summary[name] = {
+            cost_in, cost_out = _COST_PER_1K.get(name, (0.0, 0.0))
+            alltime_cost = (stats.total_input_tokens / 1000 * cost_in
+                            + stats.total_output_tokens / 1000 * cost_out)
+            daily_cost = (stats.daily_input_tokens / 1000 * cost_in
+                          + stats.daily_output_tokens / 1000 * cost_out)
+            daily_total += daily_cost
+            alltime_total += alltime_cost
+            providers[name] = {
                 "calls": stats.calls,
                 "failures": stats.failures,
                 "est_input_tokens": stats.total_input_tokens,
                 "est_output_tokens": stats.total_output_tokens,
-                "est_cost_usd": round(est_cost, 4),
+                "est_cost_usd": round(alltime_cost, 4),
+                "daily_input_tokens": stats.daily_input_tokens,
+                "daily_output_tokens": stats.daily_output_tokens,
+                "daily_cost_usd": round(daily_cost, 4),
             }
-        return summary
+        return {
+            "date": self._today,
+            "daily_total_usd": round(daily_total, 4),
+            "daily_limit_usd": self._daily_limit_usd,
+            "alltime_total_usd": round(alltime_total, 4),
+            "providers": providers,
+        }
 
     def save_usage(self) -> None:
         """Persist usage stats to disk."""
@@ -455,11 +523,21 @@ class LLMRouter:
             return
         try:
             data = json.loads(self._usage_path.read_text(encoding="utf-8"))
-            for name, info in data.items():
+            # Support both old flat format and new nested format
+            providers = data.get("providers", data)
+            saved_date = data.get("date", "")
+            today = date.today().isoformat()
+            for name, info in providers.items():
+                if not isinstance(info, dict):
+                    continue
                 stats = self._get_stats(name)
                 stats.calls = info.get("calls", 0)
                 stats.failures = info.get("failures", 0)
                 stats.total_input_tokens = info.get("est_input_tokens", 0)
                 stats.total_output_tokens = info.get("est_output_tokens", 0)
+                # Only restore daily counters if the saved date matches today
+                if saved_date == today:
+                    stats.daily_input_tokens = info.get("daily_input_tokens", 0)
+                    stats.daily_output_tokens = info.get("daily_output_tokens", 0)
         except Exception as e:
             logger.warning(f"Failed to load LLM usage: {e}")

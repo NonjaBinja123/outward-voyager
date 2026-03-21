@@ -140,3 +140,6 @@ dashboard:
   cloudflare_tunnel_token: ""
   # Fixed hostname for token-based tunnel (e.g. "voyager.yourdomain.com")
   tunnel_hostname: ""
+  # ngrok static domain for bookmarkable URL (e.g. "outward-voyager.ngrok-free.app")
+  # Claim your free domain at: https://dashboard.ngrok.com/domains
+  ngrok_domain: ""

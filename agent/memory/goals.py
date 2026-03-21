@@ -22,10 +22,19 @@ class GoalSystem:
         self.long_term: list[Goal] = self._load(self._long_term_path)
 
     def _load(self, path: Path) -> list[Goal]:
-        if path.exists():
+        if not path.exists():
+            return []
+        try:
             data = json.loads(path.read_text())
-            return [Goal(**g) for g in data]
-        return []
+            goals = []
+            for g in data:
+                try:
+                    goals.append(Goal(**g))
+                except (TypeError, KeyError):
+                    pass  # skip malformed entries
+            return goals
+        except (json.JSONDecodeError, Exception):
+            return []
 
     def _save(self) -> None:
         self._session_path.write_text(json.dumps([asdict(g) for g in self.session], indent=2))

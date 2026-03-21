@@ -9,6 +9,7 @@ The system prompt is built from adapter_info + dynamic game state only.
 """
 import json
 import logging
+import re
 from typing import Any
 
 from event_bus import GameEvent
@@ -127,7 +128,10 @@ class Brain:
         system = self._build_system(strategy=use_strategy)
         user = self._build_user(event, obs)
         task = "strategy" if use_strategy else "reactive"
-        max_tokens = 2048 if use_strategy else 1024
+        # qwen3 models need generous token budgets: thinking goes to a separate field,
+        # but thinking + content together count against num_predict.
+        # reactive: ~1500 thinking + ~500 JSON = 2000+; strategy: ~2000 thinking + ~1000 JSON = 3000+
+        max_tokens = 3072 if use_strategy else 2048
 
         logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
         try:
@@ -201,8 +205,9 @@ class Brain:
     def _parse(self, raw: str) -> dict[str, Any] | None:
         if not raw:
             return None
+        # Strip qwen3 / reasoning model thinking blocks before anything else
+        text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
         # Strip markdown fences if present
-        text = raw.strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[-1]
             text = text.rsplit("```", 1)[0]

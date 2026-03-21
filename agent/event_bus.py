@@ -171,6 +171,7 @@ class EventBus:
                 break
             if e.name in ("death", "combat_entered", "player_chat", "dashboard_chat"):
                 event = e
+                break
 
         self._pending.clear()
         await self._fire(event)

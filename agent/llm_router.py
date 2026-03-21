@@ -113,7 +113,8 @@ class LLMRouter:
         for name, cfg in self._providers.items():
             if not cfg.get("enabled", False):
                 continue
-            if name == "ollama":
+            if _BACKEND.get(name) == "ollama":
+                # All ollama variants (ollama, ollama_fast, ollama_vision) are always available
                 self._available.add(name)
             else:
                 key_var = _API_KEY_VARS.get(name, "")
@@ -416,7 +417,7 @@ class LLMRouter:
         if not ordered:
             # No routing config for this task — use all available cloud providers
             # in round-robin order, ollama last
-            cloud = sorted(p for p in self._available if p != "ollama")
+            cloud = sorted(p for p in self._available if _BACKEND.get(p) != "ollama")
             rr = self._rr_index.get(task, 0)
             if cloud:
                 cloud = cloud[rr:] + cloud[:rr]
@@ -424,11 +425,17 @@ class LLMRouter:
             ordered = cloud
 
         result = [p for p in ordered if p in self._available]
-        if "ollama" in self._available and "ollama" not in result:
-            result.append("ollama")
+
+        # Always ensure at least one ollama text variant is available as final fallback.
+        # Prefer ollama > ollama_fast over ollama_vision (vision model for text fallback is fine
+        # but text models are more efficient).
+        text_ollama = [p for p in ("ollama", "ollama_fast") if p in self._available]
+        if text_ollama and not any(_BACKEND.get(p) == "ollama" for p in result):
+            result.append(text_ollama[0])
 
         if not result:
-            result = ["ollama"] if "ollama" in self._available else []
+            # Last resort: any available ollama variant
+            result = [p for p in self._available if _BACKEND.get(p) == "ollama"][:1]
 
         return result
 
@@ -452,7 +459,7 @@ class LLMRouter:
         import aiohttp
         url = cfg.get("base_url", "http://localhost:11434")
         model = cfg.get("model", "llama3.1:8b")
-        payload = {
+        payload: dict = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system},
@@ -464,7 +471,7 @@ class LLMRouter:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{url}/api/chat", json=payload,
-                timeout=aiohttp.ClientTimeout(total=60),
+                timeout=aiohttp.ClientTimeout(total=120),
             ) as r:
                 r.raise_for_status()
                 data = await r.json()

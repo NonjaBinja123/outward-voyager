@@ -41,6 +41,8 @@ llm:
       base_url: http://localhost:11434
       model: qwen3:4b
       enabled: true
+      # qwen3 thinking mode: leave enabled — thinking goes to separate field, content is clean JSON
+      # With think:false, model reasons verbosely in content instead, which is harder to parse
 
     # Vision: qwen2.5vl:7b — excellent at reading UI text and screenshots (~5GB VRAM)
     # Pull with: ollama pull qwen2.5vl:7b

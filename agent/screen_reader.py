@@ -38,16 +38,26 @@ Focus on:
 2. Interaction prompts — key hints near objects/NPCs
    Examples: "[F] Pick Up", "Press E to Interact", "[E] Drink Water", "F - Open"
 3. Notifications and popups — item acquired, status effects, quest updates
-4. Any other HUD text, dialogue subtitles, or on-screen messages
+4. Death/respawn screens — "You Died", respawn options, defeat messages
+5. Transition prompts — "Press Space to Continue", "Press any key", loading prompts
+6. Any other HUD text, dialogue subtitles, or on-screen messages
 
 Respond with ONLY valid JSON (no markdown fences):
 {
   "is_loading_screen": false,
+  "is_death_screen": false,
+  "action_required": false,
+  "required_key": "",
   "tips": ["Tip text here if visible"],
   "interaction_hints": [{"key": "f", "action": "pick_up"}],
   "notifications": ["Item acquired: Iron Sword"],
   "all_text": "full verbatim transcript of all visible text"
 }
+
+Set "action_required": true and "required_key" to the key to press when:
+- A death/defeat screen is showing (set required_key to "space" or whichever key dismisses it)
+- A "Press X to continue" transition prompt is visible
+- Any full-screen overlay requires input before gameplay can resume
 
 If the screen is black, a main menu, or nothing useful is visible, return all empty arrays.
 Key names should be lowercase single characters or words (e, f, tab, space, etc).

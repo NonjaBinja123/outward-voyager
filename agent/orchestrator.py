@@ -162,6 +162,8 @@ class Orchestrator:
         # Only start one watcher at a time
         if self._watcher_task is None or self._watcher_task.done():
             self._watcher_task = asyncio.create_task(self._loading_screen_watcher())
+        # Also watch for any action prompts on the transition screen
+        await self._start_prompt_watcher()
 
     async def _on_game_state(self, msg: dict) -> None:
         # Persist for dashboard
@@ -246,6 +248,9 @@ class Orchestrator:
         if not self._connected:
             logger.debug(f"[Orch] Skipping event {event.name!r} — game not connected")
             return
+        # On death — start vision watcher to handle respawn/defeat screen prompts
+        if event.name == "death":
+            await self._start_prompt_watcher()
         # Refresh scene scan if stale — agent's view of the world needs to move with him
         if time.time() - self._last_scan_time > self._SCAN_INTERVAL:
             await self._scan_scene()
@@ -371,6 +376,46 @@ class Orchestrator:
             attempts += 1
         logger.info("[Screen] Loading screen watcher stopped")
 
+    _prompt_watcher_task: "asyncio.Task | None" = None
+
+    async def _start_prompt_watcher(self) -> None:
+        """Start a vision loop that presses required keys on death/transition screens."""
+        if self._prompt_watcher_task and not self._prompt_watcher_task.done():
+            return
+        self._prompt_watcher_task = asyncio.create_task(self._prompt_screen_watcher())
+
+    async def _prompt_screen_watcher(self) -> None:
+        """Poll screenshots while dead or on a transition screen, pressing required keys."""
+        logger.info("[Screen] Prompt watcher started — watching for death/transition prompts")
+        for _ in range(20):  # max 20 attempts (~60s)
+            await asyncio.sleep(3.0)
+            try:
+                data = await self._screen_reader.read_screen(min_interval=0)
+                if not data:
+                    continue
+                # Store any new tips
+                for tip in self._screen_reader.new_tips(data):
+                    logger.info(f"[Screen] Tip: {tip}")
+                    self._journal.record(JournalEntry(
+                        scene=self._state.scene or "transition",
+                        text=tip, tags=["game_tip"],
+                    ))
+                # Press the required key if a death/prompt screen is detected
+                if data.get("action_required") and data.get("required_key"):
+                    key = data["required_key"]
+                    logger.info(f"[Screen] Action required — pressing {key!r}")
+                    await self._game.press_key(key)
+                    await asyncio.sleep(1.5)
+                    continue  # keep watching in case more presses needed
+                # Stop if we're back in normal gameplay (connected, not dead)
+                player = self._state.player
+                if self._connected and not player.get("is_dead") and not data.get("is_death_screen"):
+                    logger.info("[Screen] Prompt watcher — gameplay resumed")
+                    return
+            except Exception as e:
+                logger.warning(f"[Screen] Prompt watcher error: {e}")
+        logger.info("[Screen] Prompt watcher stopped")
+
     async def _read_screen(self) -> None:
         try:
             data = await self._screen_reader.read_screen()
@@ -386,9 +431,6 @@ class Orchestrator:
             hints = self._screen_reader.interaction_hints(data)
             for h in hints:
                 self._keybindings.record_observation(h["action"], h["key"])
-            # Surface text/hints to EventBus as context only — LLM uses this to
-            # understand what's on screen but does NOT press keys automatically.
-            # Agent should use trigger_interaction with real UIDs, not key presses.
             if data.get("all_text"):
                 self._bus.on_screen_read(data)
         except Exception as e:

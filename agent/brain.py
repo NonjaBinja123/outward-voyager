@@ -32,8 +32,8 @@ GROUNDING RULES — you must follow these absolutely:
    Use close_menu, navigate_to a scene object, or wait instead.
 6. Prefer navigate_to (using pos coordinates from SCENE OBJECTS) to move toward interesting things.
    Then trigger_interaction or take_item once you are within range.
-7. If PENDING PLAYER MESSAGES is non-empty, you MUST include a say action in your response.
-   Respond to the player first, then continue with other actions.
+7. If PENDING PLAYER MESSAGES is non-empty, consider whether the situation allows a reply.
+   If not in combat or immediate danger, responding with say is natural and encouraged.
 """
 
 _REACTIVE_SYSTEM = """\

@@ -281,11 +281,12 @@ class Observation:
         self.extra_context = extra_context
         self.scene_objects = scene_objects or []
 
-    # UIDs that are Unity scene hierarchy containers, not real interactable objects.
+    # UIDs that are Unity scene hierarchy containers or placeholder objects.
     # The mod's scan picks these up — filter them out so the LLM never sees them.
     _GARBAGE_UIDS: frozenset[str] = frozenset({
         "Interiors", "Environment", "PlayerHouse", "_SNPC", "Exterior",
         "Dungeon", "Town", "Village", "City", "Interior",
+        "Cube", "Sphere", "Cylinder", "Plane", "Quad",  # Unity default primitive names
     })
 
     @staticmethod

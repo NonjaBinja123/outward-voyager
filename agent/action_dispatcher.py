@@ -152,7 +152,8 @@ class ActionDispatcher:
 
             # ── Waiting ───────────────────────────────────────────────────
             case "wait":
-                await asyncio.sleep(float(params.get("seconds", 1.0)))
+                secs = params.get("seconds", params.get("duration", 1.0))
+                await asyncio.sleep(float(secs))
 
             case "wait_for_state":
                 await self._wait_for_state(

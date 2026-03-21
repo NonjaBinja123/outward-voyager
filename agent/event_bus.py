@@ -49,6 +49,7 @@ class EventBus:
         self._pending: list[GameEvent] = []
         self._idle_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._firing: bool = False  # prevent concurrent LLM calls
 
     # ── Registration ─────────────────────────────────────────────────────────
 
@@ -132,12 +133,10 @@ class EventBus:
         self._enqueue(GameEvent("strategy_request", {"reason": reason}))
 
     def on_screen_read(self, data: dict[str, Any]) -> None:
-        """Vision LLM completed a screen read. Surface hints or tips as events."""
-        hints = data.get("interaction_hints", [])
-        if hints:
-            self._enqueue(GameEvent("screen_hint", {"text": str(hints), "raw": data}))
-        elif data.get("all_text"):
-            self._enqueue(GameEvent("screen_text", {"raw": data}))
+        """Vision LLM completed a screen read. Only surface during loading screens."""
+        # Screen reads are context-only — they don't trigger LLM calls during normal play.
+        # The orchestrator stores tips to journal directly; the LLM sees state via game_state.
+        self._last_activity = time.time()  # counts as activity so idle timer resets
 
     # ── Internals ────────────────────────────────────────────────────────────
 
@@ -148,8 +147,12 @@ class EventBus:
             self._loop.create_task(self._flush())
 
     async def _flush(self) -> None:
-        """Drain pending events, respecting debounce."""
+        """Drain pending events, respecting debounce and preventing concurrent fires."""
         if not self._pending:
+            return
+
+        # If already handling an event, wait — don't stack LLM calls
+        if self._firing:
             return
 
         now = time.time()
@@ -157,11 +160,10 @@ class EventBus:
         if wait > 0:
             await asyncio.sleep(wait)
 
-        if not self._pending:
+        if not self._pending or self._firing:
             return
 
-        # Take the highest-priority event (last in wins for now — most recent)
-        # Strategy events take priority over everything else
+        # Take highest-priority event
         event = self._pending[-1]
         for e in self._pending:
             if e.name == "strategy_request":
@@ -174,14 +176,21 @@ class EventBus:
         await self._fire(event)
 
     async def _fire(self, event: GameEvent) -> None:
+        self._firing = True
         self._last_fire = time.time()
         self._last_activity = time.time()
         logger.debug(f"[EventBus] Fire: {event.name} {event.data}")
-        for handler in self._handlers:
-            try:
-                await handler(event)
-            except Exception as e:
-                logger.warning(f"[EventBus] Handler error on {event.name!r}: {e}")
+        try:
+            for handler in self._handlers:
+                try:
+                    await handler(event)
+                except Exception as e:
+                    logger.warning(f"[EventBus] Handler error on {event.name!r}: {e}")
+        finally:
+            self._firing = False
+            # If events accumulated while we were busy, schedule a flush
+            if self._pending and self._loop and self._loop.is_running():
+                self._loop.create_task(self._flush())
 
     async def _idle_watcher(self) -> None:
         """Periodically check if we've been idle too long and fire idle_timeout."""

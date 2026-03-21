@@ -137,7 +137,9 @@ class ActionDispatcher:
 
             # ── Chat / social ─────────────────────────────────────────────
             case "say":
-                await c.say(params.get("text", ""))
+                text = params.get("text") or params.get("message", "")
+                if text:
+                    await c.say(text)
 
             # ── Waiting ───────────────────────────────────────────────────
             case "wait":

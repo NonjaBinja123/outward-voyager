@@ -129,8 +129,11 @@ class Orchestrator:
         await self._game.read_skills()
         await self._game.scan_nearby(radius=40.0)
         asyncio.create_task(self._read_screen())
-        # Immediate first think — don't wait for idle_timeout
-        self._bus.on_strategy_request("just connected")
+        # Delay first think by 3s so at least one game_state arrives first
+        async def _delayed_start():
+            await asyncio.sleep(3.0)
+            self._bus.on_strategy_request("just connected")
+        asyncio.create_task(_delayed_start())
 
     async def _on_disconnected(self, _msg: dict) -> None:
         self._loading_screen_active = True

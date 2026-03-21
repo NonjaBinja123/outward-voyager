@@ -541,6 +541,14 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
     oninput="localStorage.setItem('voy_name',this.value)">
   <button onclick="localStorage.removeItem('voy_layout');location.reload()"
     style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:3px 10px;color:#8b949e;cursor:pointer;font-size:0.8rem">Reset Layout</button>
+  <span id="share-url-wrap" style="display:none;align-items:center;gap:6px">
+    <span style="font-size:0.75rem;color:#8b949e">Share:</span>
+    <a id="share-url" href="#" target="_blank"
+      style="font-size:0.75rem;color:#58a6ff;font-family:monospace;text-decoration:none;background:#0d1117;padding:2px 8px;border-radius:4px;border:1px solid #30363d"
+      title="Send this link to a friend"></a>
+    <button onclick="navigator.clipboard.writeText(document.getElementById('share-url').href).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='Copy',1500)})"
+      style="background:#21262d;border:1px solid #30363d;border-radius:4px;padding:2px 8px;color:#8b949e;cursor:pointer;font-size:0.75rem">Copy</button>
+  </span>
   <span style="margin-left:auto;font-size:0.8rem;color:#8b949e" id="last-refresh"></span>
 </header>
 <main>
@@ -1285,9 +1293,25 @@ async function refreshAll() {
   var saved = localStorage.getItem('voy_name');
   if (saved) document.getElementById('player-name').value = saved;
 })();
+async function refreshTunnelUrl() {
+  const data = await fetchJSON('/api/tunnel');
+  if (!data) return;
+  const wrap = document.getElementById('share-url-wrap');
+  const link = document.getElementById('share-url');
+  if (data.active && data.url) {
+    link.href = data.url;
+    link.textContent = data.url.replace('https://', '');
+    wrap.style.display = 'flex';
+  } else {
+    wrap.style.display = 'none';
+  }
+}
+
 initLayout();
 refreshAll();
+refreshTunnelUrl();
 setInterval(refreshAll, 10000);
+setInterval(refreshTunnelUrl, 15000);  // poll for tunnel URL
 setInterval(refreshLog, 2000);       // live BepInEx log
 setInterval(refreshAgentLog, 3000);  // live agent log
 setInterval(refreshChat, 3000);  // fast chat updates

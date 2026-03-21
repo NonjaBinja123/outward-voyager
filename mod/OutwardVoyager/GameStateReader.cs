@@ -78,15 +78,15 @@ public class GameStateReader
                 // Survival needs — runtime dump revealed exact field names:
                 // m_food / m_drink / m_sleep are plain Single (float) current values 0-100.
                 // m_maxFood / m_maxDrink / m_maxSleep are Stat objects; max is fixed 100 in vanilla.
-                food  = TryReadFloat(stats, new[]{"m_food"});
-                drink = TryReadFloat(stats, new[]{"m_drink"});
-                sleep = TryReadFloat(stats, new[]{"m_sleep"});
+                food  = SanitizeStat(TryReadFloat(stats, new[]{"m_food"},  50f), 0f, 200f, 50f);
+                drink = SanitizeStat(TryReadFloat(stats, new[]{"m_drink"}, 50f), 0f, 200f, 50f);
+                sleep = SanitizeStat(TryReadFloat(stats, new[]{"m_sleep"}, 50f), 0f, 200f, 50f);
                 maxFood  = 100f;
                 maxDrink = 100f;
                 maxSleep = 100f;
-                bodyTemp   = TryReadFloat(stats, new[]{"m_temperature"});
-                corruption = TryReadFloat(stats, new[]{"m_corruptionLevel"});
-                maxCorruption = TryReadFloat(stats, new[]{"m_maxCorruption"});
+                bodyTemp   = SanitizeStat(TryReadFloat(stats, new[]{"m_temperature"}, 20f), -50f, 100f, 20f);
+                corruption = SanitizeStat(TryReadFloat(stats, new[]{"m_corruptionLevel"}, 0f), 0f, 200f, 0f);
+                maxCorruption = TryReadFloat(stats, new[]{"m_maxCorruption"}, 100f);
                 if (maxCorruption <= 0) maxCorruption = 100f;
             }
 
@@ -238,7 +238,7 @@ public class GameStateReader
     }
 
     /// <summary>Try to read a plain float field from CharacterStats by multiple possible names.</summary>
-    private static float TryReadFloat(CharacterStats stats, string[] names)
+    private static float TryReadFloat(CharacterStats stats, string[] names, float defaultVal = 0f)
     {
         try
         {
@@ -265,7 +265,15 @@ public class GameStateReader
             }
         }
         catch { }
-        return 20f; // default comfortable temperature
+        return defaultVal;
+    }
+
+    /// <summary>Clamp a stat value to a reasonable range; replace NaN/Infinity/garbage with defaultVal.</summary>
+    private static float SanitizeStat(float val, float min, float max, float defaultVal)
+    {
+        if (float.IsNaN(val) || float.IsInfinity(val) || val < min - 1000f || val > max + 1000f)
+            return defaultVal;
+        return Math.Clamp(val, min, max);
     }
 
     private const float ScanRadius = 100f;
@@ -348,6 +356,13 @@ public class GameStateReader
 
     private const float InteractionRadius = 6f;
 
+    // Root GameObject names that are Unity scene organizers, not real interactables.
+    private static readonly HashSet<string> SceneOrganizerNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Interiors", "Exterior", "Environment", "PlayerHouse", "_SNPC",
+        "Dungeon", "Town", "Village", "City", "Interior",
+    };
+
     private static List<NearbyInteractionEntry> GetNearbyInteractions(Vector3 playerPos)
     {
         var result = new List<NearbyInteractionEntry>();
@@ -363,15 +378,21 @@ public class GameStateReader
                 int id = root.GetInstanceID();
                 if (!seen.Add(id)) continue;
 
+                // Skip known scene organizer GameObjects — they are not real interactables
+                if (SceneOrganizerNames.Contains(root.name)) continue;
+
                 // Look for InteractionActivator on the root or any child
                 var activator = root.GetComponentInChildren<InteractionActivator>();
                 if (activator == null) continue;
                 if (!activator.gameObject.activeInHierarchy) continue;
 
-                // Use the activator/collider position — NOT the root position which can be
-                // hundreds of metres away if the root is a zone manager.
+                // Use the activator position for distance — the root position can be far away
+                // if the root is a zone manager whose collider extends over a large area.
                 var pos = activator.transform.position;
                 float dist = FlatDistance(pos, playerPos);
+
+                // Only include if the activator itself is within interaction range
+                if (dist > InteractionRadius) continue;
 
                 // Attempt to read a label — try known field/property names via reflection
                 string label = TryGetInteractionLabel(activator) ?? root.name;

@@ -19,6 +19,16 @@ logger = logging.getLogger(__name__)
 # The only text in this file that the LLM sees.
 # Intentionally game-agnostic — all game knowledge comes from adapter context.
 
+_GROUNDING_RULES = """\
+GROUNDING RULES — you must follow these absolutely:
+1. NEARBY OBJECTS is the only source of interactable UIDs. Never invent a UID.
+   If the list says "(none)", there is nothing to interact with. Do not pretend otherwise.
+2. navigate_to requires x/y/z floats from the game state. Never use a name or UID as a target.
+3. Do NOT draw on training knowledge about this game (wikis, guides, quest names, map layout).
+   You only know what appears in this observation. Treat every session as a fresh start.
+4. If you have nothing useful to do, respond with a single wait action. Do not fabricate a plan.
+"""
+
 _REACTIVE_SYSTEM = """\
 You are Voyager, an autonomous AI agent inhabiting a character in a video game.
 You make your own decisions. You learn from experience. You are curious.
@@ -27,42 +37,32 @@ CONNECTED GAME: {game_name}
 AVAILABLE ACTIONS: {available_actions}
 GAME CAPABILITIES: {capabilities}
 
+{grounding_rules}
 You will receive observations about the current game state and a triggering event.
 Respond with a JSON action plan using ONLY actions from AVAILABLE ACTIONS.
 
-CRITICAL — action parameter schemas (use EXACTLY these, no other keys):
-  navigate_to      : {{"x": <float>, "y": <float>, "z": <float>}}   ← world coords from game state
-  wait_for_arrival : {{}}
-  stop_navigation  : {{}}
-  move             : {{"direction": "forward"|"back"|"left"|"right", "duration": <seconds>}}
-  trigger_interaction : {{"uid": "<uid string from nearby_interactions>"}}
-  press_key        : {{"key": "<single key like f, e, space>"}}
-  use_item         : {{"item_name": "<name from inventory>"}}
-  equip_item       : {{"item_name": "<name from inventory>"}}
-  say              : {{"text": "<message to speak in chat>"}}
-  wait             : {{"seconds": <float>}}
-
-For navigate_to: ONLY use coordinates (x, y, z floats). Never use names or UIDs.
-  Coordinates come from nearby_interactions or nearby objects in the game state.
-  If you don't have coordinates, use trigger_interaction or move instead.
+Action parameter schemas (use EXACTLY these, no other keys):
+  navigate_to         : {{"x": <float>, "y": <float>, "z": <float>}}
+  wait_for_arrival    : {{}}
+  stop_navigation     : {{}}
+  move                : {{"direction": "forward"|"back"|"left"|"right", "duration": <seconds>}}
+  trigger_interaction : {{"uid": "<uid from NEARBY OBJECTS only>"}}
+  press_key           : {{"key": "<single key: f, e, space, etc.>"}}
+  use_item            : {{"item_name": "<name from INVENTORY>"}}
+  equip_item          : {{"item_name": "<name from INVENTORY>"}}
+  say                 : {{"text": "<message>"}}
+  wait                : {{"seconds": <float>}}
 
 Response format (JSON only, no markdown):
 {{
   "thinking": "<one sentence of internal reasoning>",
-  "actions": [
-    {{"action": "<action_name>", "params": {{...}}}},
-    ...
-  ],
-  "expect": "<what you expect to happen next>",
-  "journal": "<optional: one sentence to record in your adventure log>",
+  "actions": [{{"action": "<name>", "params": {{...}}}}],
+  "expect": "<what you expect to happen>",
+  "journal": "<optional one-sentence log entry>",
   "request_strategy": false
 }}
 
-Set "request_strategy": true if you want a deep reflection session (e.g. after death,
-when confused about long-term direction, or after achieving a major goal).
-
-Be concrete. Use actual values from the game state — UIDs, item names, coordinates.
-If nothing useful can be done right now, use {{"action": "wait", "params": {{"seconds": 2}}}}.
+Set request_strategy true only when genuinely lost or after a major event (death, big discovery).
 """
 
 _STRATEGY_SYSTEM = """\
@@ -73,24 +73,22 @@ CONNECTED GAME: {game_name}
 AVAILABLE ACTIONS: {available_actions}
 GAME CAPABILITIES: {capabilities}
 
+{grounding_rules}
 Respond with a JSON strategy plan (JSON only, no markdown):
 {{
-  "thinking": "<multi-sentence reflection on your situation>",
-  "actions": [
-    {{"action": "<action_name>", "params": {{...}}}},
-    ...
-  ],
-  "expect": "<what you expect to happen next>",
-  "journal": "<journal entry summarizing your current thoughts and direction>",
+  "thinking": "<multi-sentence reflection>",
+  "actions": [{{"action": "<name>", "params": {{...}}}}],
+  "expect": "<what you expect to happen>",
+  "journal": "<journal entry summarizing thoughts and direction>",
   "goals": {{
-    "set": ["<new goal description>"],
-    "complete": ["<completed goal description>"],
+    "set": ["<new goal>"],
+    "complete": ["<completed goal>"],
     "drop": ["<goal to abandon>"]
   }},
   "request_strategy": false
 }}
 
-Think about: what have you learned recently? What goals make sense? What should you do first?
+Think about: what do I actually observe right now? What can I do with what I have?
 """
 
 
@@ -158,6 +156,7 @@ class Brain:
             game_name=game_name,
             available_actions=actions,
             capabilities=caps,
+            grounding_rules=_GROUNDING_RULES,
         )
 
     def _build_user(self, event: GameEvent, obs: "Observation") -> str:
@@ -209,17 +208,28 @@ class Brain:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            # Try to extract JSON object from surrounding text
-            start = text.find("{")
-            end = text.rfind("}") + 1
-            if start >= 0 and end > start:
-                try:
-                    data = json.loads(text[start:end])
-                except json.JSONDecodeError:
-                    logger.warning(f"[Brain] Could not parse LLM response: {text[:200]}")
-                    return None
-            else:
-                logger.warning(f"[Brain] No JSON in LLM response: {text[:200]}")
+            # Try each '{' in the text; find the first balanced JSON object that parses.
+            # This handles Claude prepending thinking text or prose with stray braces.
+            data = None
+            for i, ch in enumerate(text):
+                if ch != "{":
+                    continue
+                depth = 0
+                for j, c in enumerate(text[i:], i):
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                data = json.loads(text[i:j + 1])
+                            except json.JSONDecodeError:
+                                pass
+                            break
+                if data is not None:
+                    break
+            if data is None:
+                logger.warning(f"[Brain] Could not parse LLM response: {text[:200]}")
                 return None
 
         actions = data.get("actions")
@@ -253,40 +263,87 @@ class Observation:
         self.pending_chat = pending_chat or []
         self.extra_context = extra_context
 
+    # UIDs that are Unity scene hierarchy containers, not real interactable objects.
+    # The mod's scan picks these up — filter them out so the LLM never sees them.
+    _GARBAGE_UIDS: frozenset[str] = frozenset({
+        "Interiors", "Environment", "PlayerHouse", "_SNPC", "Exterior",
+        "Dungeon", "Town", "Village", "City", "Interior",
+    })
+    # Max distance (metres) to show an interaction in the prompt.
+    _MAX_INTERACTION_DIST: float = 12.0
+
+    @staticmethod
+    def _fmt_stat(val: Any, max_val: Any) -> str:
+        """Format a stat value, replacing astronomical garbage values with '?'."""
+        def _clean(v: Any) -> str:
+            try:
+                f = float(v)
+                if abs(f) > 1e10 or f != f:  # insane value or NaN
+                    return "?"
+                return f"{f:.0f}"
+            except (TypeError, ValueError):
+                return "?"
+        return f"{_clean(val)}/{_clean(max_val)}"
+
     def state_summary(self) -> str:
         """Serialize game state to a compact, LLM-readable string."""
         s = self._state
         p = s.get("player", {})
         lines = [
             f"Scene: {s.get('scene', 'unknown')}",
-            f"Position: ({p.get('pos_x', '?'):.1f}, {p.get('pos_y', '?'):.1f}, {p.get('pos_z', '?'):.1f})"
-            if all(k in p for k in ("pos_x", "pos_y", "pos_z")) else "",
-            f"Health: {p.get('health', '?')}/{p.get('max_health', '?')}",
-            f"Food: {p.get('food', '?')}/{p.get('max_food', '?')}",
-            f"Drink: {p.get('drink', '?')}/{p.get('max_drink', '?')}",
-            f"Sleep: {p.get('sleep', '?')}/{p.get('max_sleep', '?')}",
+        ]
+        if all(k in p for k in ("pos_x", "pos_y", "pos_z")):
+            lines.append(
+                f"Position: ({p['pos_x']:.1f}, {p['pos_y']:.1f}, {p['pos_z']:.1f})"
+            )
+        lines += [
+            f"Health: {self._fmt_stat(p.get('health'), p.get('max_health'))}",
+            f"Food: {self._fmt_stat(p.get('food'), p.get('max_food'))}",
+            f"Drink: {self._fmt_stat(p.get('drink'), p.get('max_drink'))}",
+            f"Sleep: {self._fmt_stat(p.get('sleep'), p.get('max_sleep'))}",
             f"In combat: {p.get('in_combat', False)}",
             f"Dead: {p.get('is_dead', False)}",
         ]
-        # Nearby interactions
-        interactions = s.get("nearby_interactions", [])
-        if interactions:
-            descs = [f"{i.get('name','?')} (uid={i.get('uid','?')})" for i in interactions[:5]]
-            lines.append(f"Nearby interactions: {', '.join(descs)}")
+
+        # Nearby interactions — filtered to real, close objects only
+        raw = s.get("nearby_interactions", [])
+        player_uid = next(
+            (i.get("uid", "") for i in raw if i.get("distance", 999) == 0), ""
+        )
+        nearby = [
+            i for i in raw
+            if i.get("uid") != player_uid                         # not self
+            and i.get("uid") not in self._GARBAGE_UIDS           # not scene containers
+            and i.get("distance", 999) <= self._MAX_INTERACTION_DIST  # close enough
+        ]
+        lines.append("")
+        lines.append("NEARBY OBJECTS (only these UIDs exist — do not invent others):")
+        if nearby:
+            for obj in nearby:
+                uid = obj.get("uid", "?")
+                name = obj.get("label") or obj.get("name") or uid
+                dist = obj.get("distance", "?")
+                x = obj.get("x", "?")
+                z = obj.get("z", "?")
+                lines.append(f"  uid={uid!r}  name={name!r}  dist={dist:.1f}m  pos=({x}, {z})")
+        else:
+            lines.append("  (none — nothing interactable within range)")
 
         # Screen message
         msg = s.get("screen_message", "")
         if msg:
             lines.append(f"Screen message: {msg!r}")
 
-        # Inventory summary (top 5 items by category)
+        # Inventory
         inv = s.get("inventory", {})
-        if inv:
-            food = inv.get("food", [])[:3]
-            items = inv.get("items", [])[:3]
-            if food:
-                lines.append(f"Food in inventory: {[i.get('name','?') for i in food]}")
-            if items:
-                lines.append(f"Items in inventory: {[i.get('name','?') for i in items]}")
+        pouch = inv.get("pouch", [])
+        equipped = inv.get("equipped", {})
+        if pouch:
+            names = [i.get("name", "?") for i in pouch[:6]]
+            lines.append(f"Pouch: {', '.join(names)}")
+        if equipped:
+            worn = [f"{slot}={name}" for slot, name in equipped.items() if name]
+            if worn:
+                lines.append(f"Equipped: {', '.join(worn)}")
 
         return "\n".join(l for l in lines if l)

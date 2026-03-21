@@ -37,8 +37,8 @@ GROUNDING RULES — you must follow these absolutely:
    If ALL visible targets are blocked, use wait — do not retry blocked positions.
 7. CHARACTERS NEARBY and SCENE OBJECTS are your ONLY valid navigation targets.
    If neither list shows targets, wait or trigger_interaction with a nearby UID.
-8. If PENDING PLAYER MESSAGES is non-empty, consider whether the situation allows a reply.
-   If not in combat or immediate danger, responding with say is natural and encouraged.
+8. If PENDING PLAYER MESSAGES is non-empty, reply with say if you are not in combat or immediate danger.
+   Skip the reply if you are actively fighting or navigating somewhere critical. Your judgment.
 """
 
 _REACTIVE_SYSTEM = """\
@@ -190,12 +190,12 @@ class Brain:
         if event.data:
             lines.append(f"EVENT DATA: {json.dumps(event.data)}")
 
-        # For chat events, put the reply requirement right at the top
+        # For chat events, highlight the message prominently
         if event.name in ("player_chat", "dashboard_chat") and obs.pending_chat:
             speaker = event.data.get("speaker", "Player")
             text = event.data.get("text", "")
             lines.append(f"IMPORTANT: {speaker} said: \"{text}\"")
-            lines.append("Your FIRST action MUST be say{\"text\": \"...your reply...\"}")
+            lines.append("If you are not in combat or actively navigating, include a say action to reply naturally. If busy, prioritize the game action.")
 
         lines.append("")
         lines.append("GAME STATE:")
@@ -215,10 +215,10 @@ class Brain:
 
         if obs.pending_chat:
             lines.append("")
-            lines.append("PENDING PLAYER MESSAGES (you MUST include a say action to reply):")
+            lines.append("PENDING PLAYER MESSAGES:")
             for msg in obs.pending_chat:
                 lines.append(f"  - {msg}")
-            lines.append("  → Respond with say before any other action. Keep it brief and in-character.")
+            lines.append("  → If not in combat or immediate danger, a brief say reply is natural. Your call.")
 
         if obs.extra_context:
             lines.append("")
@@ -360,7 +360,7 @@ class Observation:
             i for i in raw
             if i.get("uid") != player_uid                # not self
             and i.get("uid") not in self._GARBAGE_UIDS  # not scene containers
-            and float(i.get("distance", 999)) >= 0.5    # skip player-worn equipment (< 0.5m)
+            and float(i.get("distance", 999)) >= 2.0    # skip player-worn equipment (< 2m)
             and i.get("uid") not in self._stuck_uids    # skip already-tried UIDs
         ]
         lines.append("")

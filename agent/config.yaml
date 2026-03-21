@@ -19,12 +19,12 @@ llm:
   daily_limit_usd: 3.0
 
   task_routing:
-    chat:     [ollama, ollama_fast]
-    reactive: [ollama, ollama_fast]
-    strategy: [ollama, ollama_fast]
-    code:     [ollama, ollama_fast]
-    scan:     [ollama, ollama_fast]
-    vision:   [ollama_vision, ollama]
+    chat:     [ollama_fast]
+    reactive: [ollama_fast]
+    strategy: [ollama_fast]
+    code:     [ollama_fast]
+    scan:     [ollama_fast]
+    vision:   [ollama_vision, ollama_fast]
 
   providers:
     # ── Local — RTX 5070 Ti (16GB VRAM) ──────────────────────────────────

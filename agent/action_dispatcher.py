@@ -8,6 +8,8 @@ Supported actions mirror the universal WebSocket protocol (PROTOCOL.md).
 """
 import asyncio
 import logging
+import math
+import random
 from typing import Any, Callable, Coroutine
 
 logger = logging.getLogger(__name__)
@@ -92,7 +94,20 @@ class ActionDispatcher:
                 x, z = float(pos["x"]), float(pos["z"])
                 # Hard-block navigation to known-unreachable cells
                 if self._state.is_blocked(x, z):
-                    logger.warning(f"[Dispatcher] navigate_to ({x:.0f},{z:.0f}) is blocked — skipping")
+                    # Redirect to a random unblocked direction instead of doing nothing
+                    p = self._state.player
+                    px, pz = float(p.get("pos_x", x)), float(p.get("pos_z", z))
+                    for _ in range(12):  # try 12 random angles
+                        angle = random.uniform(0, 360)
+                        dist = random.uniform(15, 40)
+                        rx = px + math.cos(math.radians(angle)) * dist
+                        rz = pz + math.sin(math.radians(angle)) * dist
+                        if not self._state.is_blocked(rx, rz):
+                            logger.info(f"[Dispatcher] Blocked target ({x:.0f},{z:.0f}) → random walk ({rx:.0f},{rz:.0f})")
+                            await c.navigate_to(rx, float(p.get("pos_y", 0)), rz)
+                            self._state.set_navigating(rx, rz)
+                            return
+                    logger.warning(f"[Dispatcher] All random directions blocked — staying put")
                     return
                 await c.navigate_to(x, float(pos.get("y", 0)), z)
                 self._state.set_navigating(x, z)  # enable wait_for_arrival polling

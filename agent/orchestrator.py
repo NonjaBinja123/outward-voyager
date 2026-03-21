@@ -329,13 +329,6 @@ class Orchestrator:
 
         # Dispatch actions
         actions = result.get("actions", [])
-        # If player sent a message and LLM didn't include a say, force acknowledgement
-        # Only do this for player_chat and dashboard_chat events — not every idle tick
-        if (event.name in ("player_chat", "dashboard_chat")
-                and self._pending_chat
-                and not any(a.get("action") == "say" for a in actions)):
-            actions = [{"action": "say", "params": {"text": "busy exploring, one moment"}}] + list(actions)
-            logger.debug("[Orch] Injected fallback say for unanswered chat")
         if actions:
             self._dispatcher.dispatch(actions)
             # Record for context on next think() — LLM sees what it just tried

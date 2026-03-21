@@ -472,22 +472,35 @@ class LLMRouter:
         # think: false gives the full token budget to content instead of CoT
         if "think" in cfg:
             payload["think"] = cfg["think"]
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}/api/chat", json=payload,
-                timeout=aiohttp.ClientTimeout(total=600),
-            ) as r:
-                r.raise_for_status()
-                data = await r.json()
-                content = data["message"]["content"]
-                if not content:
-                    # qwen3: thinking may have used all tokens — done_reason='length'
-                    done_reason = data.get("done_reason", "")
-                    raise ValueError(
-                        f"Ollama returned empty content (done_reason={done_reason!r}). "
-                        f"Try increasing max_tokens or check model availability."
-                    )
-                return content
+
+        # Retry up to 5 times on 500 — Ollama returns 500 while the model is loading
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{url}/api/chat", json=payload,
+                    timeout=aiohttp.ClientTimeout(total=600),
+                ) as r:
+                    if r.status == 500 and attempt < max_attempts - 1:
+                        wait = 5 * (attempt + 1)
+                        logger.info(
+                            f"[LLM] Ollama 500 on attempt {attempt+1} "
+                            f"(model likely loading) — retrying in {wait}s"
+                        )
+                        await asyncio.sleep(wait)
+                        continue
+                    r.raise_for_status()
+                    data = await r.json()
+                    content = data["message"]["content"]
+                    if not content:
+                        # qwen3: thinking may have used all tokens — done_reason='length'
+                        done_reason = data.get("done_reason", "")
+                        raise ValueError(
+                            f"Ollama returned empty content (done_reason={done_reason!r}). "
+                            f"Try increasing max_tokens or check model availability."
+                        )
+                    return content
+        raise RuntimeError(f"Ollama model '{model}' failed after {max_attempts} attempts (all 500)")
 
     async def _claude(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         import anthropic

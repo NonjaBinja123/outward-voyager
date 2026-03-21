@@ -83,6 +83,10 @@ class Orchestrator:
         # Track how many times each UID has been attempted via trigger_interaction.
         # Cleared on scene change. UIDs tried 3+ times are shown as "stuck" to the LLM.
         self._interaction_attempts: dict[str, int] = {}
+        # Track recently visited nav targets (rounded x,z) with timestamps.
+        # Prevents immediately re-navigating to a spot just arrived at.
+        self._visited_nav: dict[tuple[int, int], float] = {}
+        self._NAV_REVISIT_COOLDOWN = 90.0  # seconds before re-navigating to same spot
 
         # ── Wire together ─────────────────────────────────────────────────
         self._state.on_delta(self._bus.on_state_delta)
@@ -174,6 +178,7 @@ class Orchestrator:
         # Clear interaction attempt counts when entering a new scene
         if delta.scene_changed:
             self._interaction_attempts.clear()
+            self._visited_nav.clear()
         # Navigation stuck check
         is_stuck, px, py, pz = self._state.check_stuck()
         if is_stuck:
@@ -206,6 +211,10 @@ class Orchestrator:
 
     async def _on_nav_arrived(self, msg: dict) -> None:
         self._state.set_arrived()
+        # Record this position as recently visited
+        p = self._state.player
+        key = (round(p.get("pos_x", 0)), round(p.get("pos_z", 0)))
+        self._visited_nav[key] = time.time()
         await self._scan_scene()
         self._bus.on_nav_arrived()
 
@@ -280,6 +289,11 @@ class Orchestrator:
                     uid = params.get("uid", "")
                     if uid:
                         self._interaction_attempts[uid] = self._interaction_attempts.get(uid, 0) + 1
+                # Track navigate_to targets dispatched
+                if name == "navigate_to":
+                    nx = round(float(params.get("x", 0)))
+                    nz = round(float(params.get("z", 0)))
+                    self._visited_nav[(nx, nz)] = time.time()
 
         # Agent self-requests strategy session
         if result.get("request_strategy"):
@@ -307,6 +321,16 @@ class Orchestrator:
         extra_parts = []
         if self._recent_actions:
             extra_parts.append("RECENTLY ATTEMPTED: " + ", ".join(self._recent_actions))
+        # Prune old visited nav entries
+        now = time.time()
+        self._visited_nav = {k: v for k, v in self._visited_nav.items()
+                             if now - v < self._NAV_REVISIT_COOLDOWN}
+        if self._visited_nav:
+            visited_strs = [f"({x}, {z})" for (x, z) in self._visited_nav]
+            extra_parts.append(
+                f"RECENTLY VISITED positions (avoid re-navigating here for ~{self._NAV_REVISIT_COOLDOWN:.0f}s): "
+                + ", ".join(visited_strs[-5:])  # show last 5
+            )
         # Active navigation
         if self._state.is_navigating:
             tx, tz = self._state._nav_target

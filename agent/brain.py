@@ -130,8 +130,8 @@ class Brain:
         task = "strategy" if use_strategy else "reactive"
         # qwen3 models need generous token budgets: thinking goes to a separate field,
         # but thinking + content together count against num_predict.
-        # reactive: ~1500 thinking + ~500 JSON = 2000+; strategy: ~2000 thinking + ~1000 JSON = 3000+
-        max_tokens = 3072 if use_strategy else 2048
+        # reactive: ~3000 thinking + ~500 JSON = 3500+; strategy: ~3000 thinking + ~1500 JSON = 4500+
+        max_tokens = 5120 if use_strategy else 4096
 
         logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
         try:

@@ -269,7 +269,7 @@ class LLMRouter:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{url}/api/chat", json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=180),
             ) as r:
                 r.raise_for_status()
                 data = await r.json()
@@ -471,7 +471,7 @@ class LLMRouter:
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{url}/api/chat", json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=180),
             ) as r:
                 r.raise_for_status()
                 data = await r.json()

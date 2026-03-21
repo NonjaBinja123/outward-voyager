@@ -359,7 +359,7 @@ class Orchestrator:
 
     # ── Scene scanning ────────────────────────────────────────────────────────
 
-    async def _scan_scene(self, radius: float = 40.0) -> None:
+    async def _scan_scene(self, radius: float = 80.0) -> None:
         """Issue a scan_nearby to refresh the agent's view of the surrounding area."""
         self._last_scan_time = time.time()
         await self._game.scan_nearby(radius=radius)

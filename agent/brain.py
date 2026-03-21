@@ -140,10 +140,9 @@ class Brain:
         system = self._build_system(strategy=use_strategy)
         user = self._build_user(event, obs)
         task = "strategy" if use_strategy else "reactive"
-        # qwen3 models need generous token budgets: thinking goes to a separate field,
-        # but thinking + content together count against num_predict.
-        # reactive: ~3000 thinking + ~500 JSON = 3500+; strategy: ~3000 thinking + ~1500 JSON = 4500+
-        max_tokens = 5120 if use_strategy else 4096
+        # Ollama is free/local — no reason to cap output tokens tightly.
+        # qwen3:14b thinking (strategy) can use 8K+ tokens; give it room.
+        max_tokens = 16384 if use_strategy else 8192
 
         logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
         try:
@@ -354,9 +353,11 @@ class Observation:
 
         # ── Scene objects (visible in area, navigate toward them) ────────────
         if self.scene_objects:
-            # Separate characters (NPCs/enemies) from plain objects
-            characters = [o for o in self.scene_objects if o.get("has_character") and not o.get("is_dead")]
-            non_chars = [o for o in self.scene_objects if not o.get("has_character")]
+            # Only show objects worth navigating to (more than 8m away — already-nearby objects
+            # are already in INTERACT NOW; showing them here causes pointless micro-navigation)
+            far_enough = [o for o in self.scene_objects if float(o.get("distance", 999)) > 8]
+            characters = [o for o in far_enough if o.get("has_character") and not o.get("is_dead")]
+            non_chars = [o for o in far_enough if not o.get("has_character")]
 
             if characters:
                 lines.append("")

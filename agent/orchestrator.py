@@ -274,6 +274,7 @@ class Orchestrator:
             recent_journal=recent_texts,
             active_goals=active_goals,
             pending_chat=list(self._pending_chat),
+            scene_objects=self._state.nearby_objects,
         )
 
     # ── Screen reading ────────────────────────────────────────────────────────

@@ -256,12 +256,14 @@ class Observation:
         active_goals: list[str] | None = None,
         pending_chat: list[str] | None = None,
         extra_context: str = "",
+        scene_objects: list[dict] | None = None,
     ) -> None:
         self._state = state
         self.recent_journal = recent_journal or []
         self.active_goals = active_goals or []
         self.pending_chat = pending_chat or []
         self.extra_context = extra_context
+        self.scene_objects = scene_objects or []
 
     # UIDs that are Unity scene hierarchy containers, not real interactable objects.
     # The mod's scan picks these up — filter them out so the LLM never sees them.
@@ -269,8 +271,6 @@ class Observation:
         "Interiors", "Environment", "PlayerHouse", "_SNPC", "Exterior",
         "Dungeon", "Town", "Village", "City", "Interior",
     })
-    # Max distance (metres) to show an interaction in the prompt.
-    _MAX_INTERACTION_DIST: float = 12.0
 
     @staticmethod
     def _fmt_stat(val: Any, max_val: Any) -> str:
@@ -305,29 +305,39 @@ class Observation:
             f"Dead: {p.get('is_dead', False)}",
         ]
 
-        # Nearby interactions — filtered to real, close objects only
+        # ── Nearby interactions (can trigger_interaction RIGHT NOW) ──────────
         raw = s.get("nearby_interactions", [])
         player_uid = next(
             (i.get("uid", "") for i in raw if i.get("distance", 999) == 0), ""
         )
-        nearby = [
+        interactable = [
             i for i in raw
-            if i.get("uid") != player_uid                         # not self
-            and i.get("uid") not in self._GARBAGE_UIDS           # not scene containers
-            and i.get("distance", 999) <= self._MAX_INTERACTION_DIST  # close enough
+            if i.get("uid") != player_uid                # not self
+            and i.get("uid") not in self._GARBAGE_UIDS  # not scene containers
         ]
         lines.append("")
-        lines.append("NEARBY OBJECTS (only these UIDs exist — do not invent others):")
-        if nearby:
-            for obj in nearby:
+        lines.append("INTERACT NOW — use trigger_interaction with these UIDs only:")
+        if interactable:
+            for obj in interactable:
                 uid = obj.get("uid", "?")
                 name = obj.get("label") or obj.get("name") or uid
-                dist = obj.get("distance", "?")
-                x = obj.get("x", "?")
-                z = obj.get("z", "?")
+                dist = obj.get("distance", 0)
+                x, z = obj.get("x", "?"), obj.get("z", "?")
                 lines.append(f"  uid={uid!r}  name={name!r}  dist={dist:.1f}m  pos=({x}, {z})")
         else:
-            lines.append("  (none — nothing interactable within range)")
+            lines.append("  (none — move closer to something before interacting)")
+
+        # ── Scene objects (visible in area, navigate toward them) ────────────
+        if self.scene_objects:
+            lines.append("")
+            lines.append("SCENE OBJECTS — visible nearby, use navigate_to pos to approach:")
+            for obj in self.scene_objects[:20]:  # cap at 20 to avoid prompt bloat
+                name = obj.get("name", "?")
+                dist = obj.get("distance", "?")
+                x, y, z = obj.get("x", "?"), obj.get("y", "?"), obj.get("z", "?")
+                tag = obj.get("tag", "")
+                tag_str = f"  [{tag}]" if tag and tag not in ("Untagged", "") else ""
+                lines.append(f"  {name!r}  dist={dist}m  pos=({x}, {y}, {z}){tag_str}")
 
         # Screen message
         msg = s.get("screen_message", "")

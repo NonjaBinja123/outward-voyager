@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -77,6 +78,8 @@ class Orchestrator:
         self._watcher_task: asyncio.Task | None = None  # only one watcher at a time
         # Pending player chat messages waiting to be included in next think()
         self._pending_chat: list[str] = []
+        # Last N dispatched actions — shown to LLM so it doesn't repeat itself
+        self._recent_actions: deque[str] = deque(maxlen=5)
 
         # ── Wire together ─────────────────────────────────────────────────
         self._state.on_delta(self._bus.on_state_delta)
@@ -261,6 +264,11 @@ class Orchestrator:
         actions = result.get("actions", [])
         if actions:
             self._dispatcher.dispatch(actions)
+            # Record for context on next think() — LLM sees what it just tried
+            for a in actions[:3]:  # record first 3 steps only
+                name = a.get("action", "")
+                params = a.get("params", {})
+                self._recent_actions.append(f"{name}({params})")
 
         # Agent self-requests strategy session
         if result.get("request_strategy"):
@@ -283,12 +291,16 @@ class Orchestrator:
         goal = self._goals.top_priority()
         active_goals = [goal.description] if goal else []
         recent_texts = self._journal.recent(5)
+        extra = ""
+        if self._recent_actions:
+            extra = "RECENTLY ATTEMPTED: " + ", ".join(self._recent_actions)
         return Observation(
             state=self._state.current,
             recent_journal=recent_texts,
             active_goals=active_goals,
             pending_chat=list(self._pending_chat),
             scene_objects=self._state.nearby_objects,
+            extra_context=extra,
         )
 
     # ── Scene scanning ────────────────────────────────────────────────────────

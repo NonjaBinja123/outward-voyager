@@ -475,7 +475,15 @@ class LLMRouter:
             ) as r:
                 r.raise_for_status()
                 data = await r.json()
-                return data["message"]["content"]
+                content = data["message"]["content"]
+                if not content:
+                    # qwen3: thinking may have used all tokens — done_reason='length'
+                    done_reason = data.get("done_reason", "")
+                    raise ValueError(
+                        f"Ollama returned empty content (done_reason={done_reason!r}). "
+                        f"Try increasing max_tokens or check model availability."
+                    )
+                return content
 
     async def _claude(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         import anthropic

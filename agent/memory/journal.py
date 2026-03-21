@@ -29,12 +29,18 @@ class JournalEntry:
 
 class AdventureJournal:
     def __init__(self, chroma_path: str, collection: str) -> None:
+        self._collection_name = collection
         if not _CHROMA_AVAILABLE:
             self._client = None
             self._col = None
             return
         self._client = chromadb.PersistentClient(path=chroma_path)
         self._col = self._client.get_or_create_collection(collection)
+
+    def _refresh_col(self) -> None:
+        """Re-acquire the collection handle — recovers from stale UUID after external deletion."""
+        if self._client is not None:
+            self._col = self._client.get_or_create_collection(self._collection_name)
 
     def record(self, entry: JournalEntry) -> None:
         if self._col is None:
@@ -49,11 +55,21 @@ class AdventureJournal:
             metadata["game_id"] = entry.game_id
         if entry.game_display_name:
             metadata["game_display_name"] = entry.game_display_name
-        self._col.add(
-            documents=[entry.text],
-            metadatas=[metadata],
-            ids=[entry_id],
-        )
+        try:
+            self._col.add(
+                documents=[entry.text],
+                metadatas=[metadata],
+                ids=[entry_id],
+            )
+        except Exception:
+            # Stale collection UUID — re-acquire and retry once
+            self._refresh_col()
+            if self._col is not None:
+                self._col.add(
+                    documents=[entry.text],
+                    metadatas=[metadata],
+                    ids=[entry_id],
+                )
 
     def recall(self, query: str, n: int = 5, scene: str | None = None,
                game_id: str | None = None, exclude_game_id: str | None = None,
@@ -93,14 +109,25 @@ class AdventureJournal:
             )
             return results["documents"][0] if results["documents"] else []
         except Exception:
-            # ChromaDB raises if where filter returns no candidates — fall back to no filter
-            results = self._col.query(query_texts=[query], n_results=n)
-            return results["documents"][0] if results["documents"] else []
+            # Either stale UUID or where filter returned no candidates — retry without filter
+            self._refresh_col()
+            try:
+                results = self._col.query(query_texts=[query], n_results=n)
+                return results["documents"][0] if results["documents"] else []
+            except Exception:
+                return []
 
     def recent(self, n: int = 10) -> list[str]:
         if self._col is None:
             return []
-        all_items = self._col.get(include=["documents", "metadatas"])
+        try:
+            all_items = self._col.get(include=["documents", "metadatas"])
+        except Exception:
+            self._refresh_col()
+            try:
+                all_items = self._col.get(include=["documents", "metadatas"])
+            except Exception:
+                return []
         docs = list(zip(all_items["documents"], all_items["metadatas"]))
         docs.sort(key=lambda x: x[1].get("ts", 0), reverse=True)
         return [d for d, _ in docs[:n]]

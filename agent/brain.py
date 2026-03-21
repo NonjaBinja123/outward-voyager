@@ -50,7 +50,6 @@ Action parameter schemas (use EXACTLY these, no other keys):
   navigate_to         : {{"x": <float>, "y": <float>, "z": <float>}}
   wait_for_arrival    : {{}}
   stop_navigation     : {{}}
-  move                : {{"direction": "forward"|"back"|"left"|"right", "duration": <seconds>}}
   trigger_interaction : {{"uid": "<uid from NEARBY OBJECTS only>"}}
   take_item           : {{"item_name": "<item name to pick up from the ground>"}}
   open_menu           : {{"menu": "inventory"|"map"|"character"|"skills"}}
@@ -153,10 +152,9 @@ class Brain:
 
     # Fallback action list when no adapter_info has been received
     _FALLBACK_ACTIONS = (
-        "navigate_to, wait_for_arrival, stop_navigation, move, "
-        "look_direction, trigger_interaction, take_item, "
-        "open_menu, close_menu, press_key, use_item, "
-        "equip_item, drop_item, say, wait, wait_for_state"
+        "navigate_to, wait_for_arrival, stop_navigation, "
+        "trigger_interaction, take_item, open_menu, close_menu, "
+        "press_key, use_item, equip_item, say, wait, wait_for_state"
     )
 
     def _build_system(self, *, strategy: bool) -> str:
@@ -314,12 +312,16 @@ class Observation:
             )
         lines += [
             f"Health: {self._fmt_stat(p.get('health'), p.get('max_health'))}",
+            f"Stamina: {self._fmt_stat(p.get('stamina'), p.get('max_stamina'))}",
             f"Food: {self._fmt_stat(p.get('food'), p.get('max_food'))}",
             f"Drink: {self._fmt_stat(p.get('drink'), p.get('max_drink'))}",
             f"Sleep: {self._fmt_stat(p.get('sleep'), p.get('max_sleep'))}",
             f"In combat: {p.get('in_combat', False)}",
             f"Dead: {p.get('is_dead', False)}",
         ]
+        status = p.get("status_effects", [])
+        if status:
+            lines.append(f"Status effects: {', '.join(status)}")
 
         # ── Nearby interactions (can trigger_interaction RIGHT NOW) ──────────
         raw = s.get("nearby_interactions", [])
@@ -345,15 +347,29 @@ class Observation:
 
         # ── Scene objects (visible in area, navigate toward them) ────────────
         if self.scene_objects:
-            lines.append("")
-            lines.append("SCENE OBJECTS — visible nearby, use navigate_to pos to approach:")
-            for obj in self.scene_objects[:20]:  # cap at 20 to avoid prompt bloat
-                name = obj.get("name", "?")
-                dist = obj.get("distance", "?")
-                x, y, z = obj.get("x", "?"), obj.get("y", "?"), obj.get("z", "?")
-                tag = obj.get("tag", "")
-                tag_str = f"  [{tag}]" if tag and tag not in ("Untagged", "") else ""
-                lines.append(f"  {name!r}  dist={dist}m  pos=({x}, {y}, {z}){tag_str}")
+            # Separate characters (NPCs/enemies) from plain objects
+            characters = [o for o in self.scene_objects if o.get("has_character") and not o.get("is_dead")]
+            non_chars = [o for o in self.scene_objects if not o.get("has_character")]
+
+            if characters:
+                lines.append("")
+                lines.append("CHARACTERS NEARBY — navigate_to their pos then trigger_interaction:")
+                for obj in characters[:10]:
+                    name = obj.get("name", "?")
+                    dist = obj.get("distance", "?")
+                    x, y, z = obj.get("x", "?"), obj.get("y", "?"), obj.get("z", "?")
+                    lines.append(f"  {name!r}  dist={dist}m  pos=({x}, {y}, {z})")
+
+            if non_chars:
+                lines.append("")
+                lines.append("SCENE OBJECTS — navigate_to pos to approach:")
+                for obj in non_chars[:15]:
+                    name = obj.get("name", "?")
+                    dist = obj.get("distance", "?")
+                    x, y, z = obj.get("x", "?"), obj.get("y", "?"), obj.get("z", "?")
+                    tag = obj.get("tag", "")
+                    tag_str = f"  [{tag}]" if tag and tag not in ("Untagged", "") else ""
+                    lines.append(f"  {name!r}  dist={dist}m  pos=({x}, {y}, {z}){tag_str}")
 
         # Screen message
         msg = s.get("screen_message", "")
@@ -365,8 +381,12 @@ class Observation:
         pouch = inv.get("pouch", [])
         equipped = inv.get("equipped", {})
         if pouch:
-            names = [i.get("name", "?") for i in pouch[:6]]
-            lines.append(f"Pouch: {', '.join(names)}")
+            item_strs = []
+            for i in pouch[:12]:
+                qty = i.get("quantity", 1)
+                name = i.get("name", "?")
+                item_strs.append(f"{name}x{qty}" if qty > 1 else name)
+            lines.append(f"Pouch ({len(pouch)} items): {', '.join(item_strs)}")
         if equipped:
             worn = [f"{slot}={name}" for slot, name in equipped.items() if name]
             if worn:

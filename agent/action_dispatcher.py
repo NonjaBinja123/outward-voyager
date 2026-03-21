@@ -89,11 +89,9 @@ class ActionDispatcher:
                     raise ValueError(
                         f"navigate_to requires x and z coordinates, got: {params}"
                     )
-                await c.navigate_to(
-                    float(pos["x"]),
-                    float(pos.get("y", 0)),
-                    float(pos["z"]),
-                )
+                x, z = float(pos["x"]), float(pos["z"])
+                await c.navigate_to(x, float(pos.get("y", 0)), z)
+                self._state.set_navigating(x, z)  # enable wait_for_arrival polling
 
             case "wait_for_arrival":
                 await self._wait_for_arrival(

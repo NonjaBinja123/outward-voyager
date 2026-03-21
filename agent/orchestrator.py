@@ -307,6 +307,10 @@ class Orchestrator:
         extra_parts = []
         if self._recent_actions:
             extra_parts.append("RECENTLY ATTEMPTED: " + ", ".join(self._recent_actions))
+        # Active navigation
+        if self._state.is_navigating:
+            tx, tz = self._state._nav_target
+            extra_parts.append(f"NAVIGATING to ({tx:.1f}, ?, {tz:.1f}) — use wait_for_arrival to block until done, or issue new navigate_to to redirect")
         # UIDs tried 3+ times with no state change — tell the LLM to stop
         stuck = [uid for uid, n in self._interaction_attempts.items() if n >= 3]
         if stuck:

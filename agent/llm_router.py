@@ -189,7 +189,7 @@ class LLMRouter:
             if self._is_paid(name) and daily >= self._daily_limit_usd:
                 continue
 
-            if stats.consecutive_failures >= 3:
+            if self._is_paid(name) and stats.consecutive_failures >= 3:
                 cooldown = min(300, 30 * stats.consecutive_failures)
                 if time.time() - stats.last_failure < cooldown:
                     continue
@@ -266,14 +266,30 @@ class LLMRouter:
             "stream": False,
             "options": {"num_predict": max_tokens},
         }
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{url}/api/chat", json=payload,
-                timeout=aiohttp.ClientTimeout(total=600),
-            ) as r:
-                r.raise_for_status()
-                data = await r.json()
-                return data["message"]["content"]
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{url}/api/chat", json=payload,
+                        timeout=aiohttp.ClientTimeout(total=120),
+                    ) as r:
+                        if r.status == 500 and attempt < max_attempts - 1:
+                            wait = 10 * (attempt + 1)
+                            logger.info(f"[LLM] Ollama vision 500 on attempt {attempt+1} — retrying in {wait}s")
+                            await asyncio.sleep(wait)
+                            continue
+                        r.raise_for_status()
+                        data = await r.json()
+                        return data["message"]["content"]
+            except aiohttp.ClientConnectorError:
+                if attempt < max_attempts - 1:
+                    wait = 10 * (attempt + 1)
+                    logger.info(f"[LLM] Ollama vision not reachable on attempt {attempt+1} — retrying in {wait}s")
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError(f"Ollama vision model '{model}' failed after {max_attempts} attempts")
 
     async def _claude_vision(self, cfg: dict, system: str, user: str, img_b64: str, max_tokens: int) -> str:
         import anthropic
@@ -333,8 +349,8 @@ class LLMRouter:
                     f"[LLM] Approaching daily cap: ${daily:.4f} / ${self._daily_limit_usd:.2f}"
                 )
 
-            # Back off if provider is failing repeatedly
-            if stats.consecutive_failures >= 3:
+            # Back off if paid provider is failing repeatedly (never cooldown Ollama — it's local)
+            if self._is_paid(name) and stats.consecutive_failures >= 3:
                 cooldown = min(300, 30 * stats.consecutive_failures)
                 if time.time() - stats.last_failure < cooldown:
                     logger.debug(f"Skipping {name} — cooling down after {stats.consecutive_failures} failures")
@@ -473,34 +489,44 @@ class LLMRouter:
         if "think" in cfg:
             payload["think"] = cfg["think"]
 
-        # Retry up to 5 times on 500 — Ollama returns 500 while the model is loading
+        # Retry up to 5 times on 500 (model loading) or connection refused (Ollama not up yet)
         max_attempts = 5
         for attempt in range(max_attempts):
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                    f"{url}/api/chat", json=payload,
-                    timeout=aiohttp.ClientTimeout(total=600),
-                ) as r:
-                    if r.status == 500 and attempt < max_attempts - 1:
-                        wait = 5 * (attempt + 1)
-                        logger.info(
-                            f"[LLM] Ollama 500 on attempt {attempt+1} "
-                            f"(model likely loading) — retrying in {wait}s"
-                        )
-                        await asyncio.sleep(wait)
-                        continue
-                    r.raise_for_status()
-                    data = await r.json()
-                    content = data["message"]["content"]
-                    if not content:
-                        # qwen3: thinking may have used all tokens — done_reason='length'
-                        done_reason = data.get("done_reason", "")
-                        raise ValueError(
-                            f"Ollama returned empty content (done_reason={done_reason!r}). "
-                            f"Try increasing max_tokens or check model availability."
-                        )
-                    return content
-        raise RuntimeError(f"Ollama model '{model}' failed after {max_attempts} attempts (all 500)")
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(
+                        f"{url}/api/chat", json=payload,
+                        timeout=aiohttp.ClientTimeout(total=600),
+                    ) as r:
+                        if r.status == 500 and attempt < max_attempts - 1:
+                            wait = 5 * (attempt + 1)
+                            logger.info(
+                                f"[LLM] Ollama 500 on attempt {attempt+1} "
+                                f"(model likely loading) — retrying in {wait}s"
+                            )
+                            await asyncio.sleep(wait)
+                            continue
+                        r.raise_for_status()
+                        data = await r.json()
+                        content = data["message"]["content"]
+                        if not content:
+                            done_reason = data.get("done_reason", "")
+                            raise ValueError(
+                                f"Ollama returned empty content (done_reason={done_reason!r}). "
+                                f"Try increasing max_tokens or check model availability."
+                            )
+                        return content
+            except aiohttp.ClientConnectorError:
+                if attempt < max_attempts - 1:
+                    wait = 5 * (attempt + 1)
+                    logger.info(
+                        f"[LLM] Ollama not reachable on attempt {attempt+1} "
+                        f"(not running yet?) — retrying in {wait}s"
+                    )
+                    await asyncio.sleep(wait)
+                else:
+                    raise
+        raise RuntimeError(f"Ollama model '{model}' failed after {max_attempts} attempts")
 
     async def _claude(self, cfg: dict, system: str, user: str, max_tokens: int) -> str:
         import anthropic

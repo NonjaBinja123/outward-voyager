@@ -471,7 +471,7 @@ class Orchestrator:
                 continue
 
             try:
-                data = await self._screen_reader.read_screen(min_interval=0)
+                data = await self._screen_reader.read_screen(min_interval=5.0)
                 if not data:
                     continue
 

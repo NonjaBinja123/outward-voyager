@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 DEBOUNCE_SECONDS = 2.0
 
 # If nothing triggers the LLM for this long, fire idle_timeout
-IDLE_TIMEOUT_SECONDS = 15.0
+IDLE_TIMEOUT_SECONDS = 8.0
 
 
 @dataclass

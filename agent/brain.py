@@ -190,6 +190,13 @@ class Brain:
         if event.data:
             lines.append(f"EVENT DATA: {json.dumps(event.data)}")
 
+        # For chat events, put the reply requirement right at the top
+        if event.name in ("player_chat", "dashboard_chat") and obs.pending_chat:
+            speaker = event.data.get("speaker", "Player")
+            text = event.data.get("text", "")
+            lines.append(f"IMPORTANT: {speaker} said: \"{text}\"")
+            lines.append("Your FIRST action MUST be say{\"text\": \"...your reply...\"}")
+
         lines.append("")
         lines.append("GAME STATE:")
         lines.append(obs.state_summary())
@@ -208,9 +215,10 @@ class Brain:
 
         if obs.pending_chat:
             lines.append("")
-            lines.append("PENDING PLAYER MESSAGES:")
+            lines.append("PENDING PLAYER MESSAGES (you MUST include a say action to reply):")
             for msg in obs.pending_chat:
                 lines.append(f"  - {msg}")
+            lines.append("  → Respond with say before any other action. Keep it brief and in-character.")
 
         if obs.extra_context:
             lines.append("")

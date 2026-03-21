@@ -329,6 +329,13 @@ class Orchestrator:
 
         # Dispatch actions
         actions = result.get("actions", [])
+        # If player sent a message and LLM didn't include a say, force acknowledgement
+        # Only do this for player_chat and dashboard_chat events — not every idle tick
+        if (event.name in ("player_chat", "dashboard_chat")
+                and self._pending_chat
+                and not any(a.get("action") == "say" for a in actions)):
+            actions = [{"action": "say", "params": {"text": "busy exploring, one moment"}}] + list(actions)
+            logger.debug("[Orch] Injected fallback say for unanswered chat")
         if actions:
             self._dispatcher.dispatch(actions)
             # Record for context on next think() — LLM sees what it just tried
@@ -436,36 +443,78 @@ class Orchestrator:
         self._prompt_watcher_task = asyncio.create_task(self._prompt_screen_watcher())
 
     async def _prompt_screen_watcher(self) -> None:
-        """Poll screenshots while dead or on a transition screen, pressing required keys."""
-        logger.info("[Screen] Prompt watcher started — watching for death/transition prompts")
-        for _ in range(20):  # max 20 attempts (~60s)
-            await asyncio.sleep(3.0)
+        """Poll screenshots while dead or on a transition screen, pressing required keys.
+
+        Strategy:
+        1. Take a screenshot immediately (no wait on first iteration)
+        2. Try to identify the required key via vision LLM
+        3. If vision says action_required → press that key
+        4. If vision detects death/transition screen but no key identified → press space
+        5. If player is still dead after 10s with no vision → press space as fallback
+        6. Repeat until gameplay resumes or 25 attempts exhausted
+        """
+        logger.info("[Screen] Prompt watcher started")
+        last_key_press_time = 0.0
+
+        for attempt in range(25):  # ~2.5 minutes coverage
+            # No initial delay on first attempt — act immediately
+            if attempt > 0:
+                await asyncio.sleep(2.5)
+
+            # Check if gameplay already resumed (player alive + connected)
+            player = self._state.player
+            if self._connected and not player.get("is_dead"):
+                logger.info("[Screen] Gameplay resumed — prompt watcher done")
+                return
+
+            # Fallback: if still dead and no key pressed in last 8s, press space directly
+            now = time.time()
+            if player.get("is_dead") and (now - last_key_press_time) > 8.0:
+                logger.info("[Screen] Player dead — pressing space (fallback)")
+                await self._game.press_key("space")
+                last_key_press_time = now
+                await asyncio.sleep(1.0)
+                continue
+
             try:
                 data = await self._screen_reader.read_screen(min_interval=0)
                 if not data:
                     continue
-                # Store any new tips
+
+                all_text = data.get("all_text", "")
+                logger.info(f"[Screen] Read — action_required={data.get('action_required')} "
+                            f"is_death={data.get('is_death_screen')} "
+                            f"key={data.get('required_key')!r} "
+                            f"text={all_text[:80]!r}")
+
+                # Store loading tips
                 for tip in self._screen_reader.new_tips(data):
                     logger.info(f"[Screen] Tip: {tip}")
                     self._journal.record(JournalEntry(
                         scene=self._state.scene or "transition",
                         text=tip, tags=["game_tip"],
                     ))
-                # Press the required key if a death/prompt screen is detected
+
+                # Vision identified a required key — use it
                 if data.get("action_required") and data.get("required_key"):
                     key = data["required_key"]
-                    logger.info(f"[Screen] Action required — pressing {key!r}")
+                    logger.info(f"[Screen] Vision: press {key!r}")
                     await self._game.press_key(key)
+                    last_key_press_time = time.time()
                     await asyncio.sleep(1.5)
-                    continue  # keep watching in case more presses needed
-                # Stop if we're back in normal gameplay (connected, not dead)
-                player = self._state.player
-                if self._connected and not player.get("is_dead") and not data.get("is_death_screen"):
-                    logger.info("[Screen] Prompt watcher — gameplay resumed")
-                    return
+                    continue
+
+                # Vision detected death/transition but didn't identify a key — press space
+                if data.get("is_death_screen") or data.get("is_loading_screen"):
+                    logger.info("[Screen] Death/loading detected — pressing space")
+                    await self._game.press_key("space")
+                    last_key_press_time = time.time()
+                    await asyncio.sleep(1.5)
+
             except Exception as e:
-                logger.warning(f"[Screen] Prompt watcher error: {e}")
-        logger.info("[Screen] Prompt watcher stopped")
+                logger.warning(f"[Screen] Watcher error: {e}")
+
+        logger.info("[Screen] Prompt watcher exhausted")
 
     async def _read_screen(self) -> None:
         try:

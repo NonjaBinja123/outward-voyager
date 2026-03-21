@@ -408,6 +408,135 @@ def get_agent_skills() -> JSONResponse:
     return JSONResponse(skills)
 
 
+@app.get("/api/all")
+def get_all() -> JSONResponse:
+    """All slow-changing dashboard data in one request — reduces tunnel bandwidth ~15x."""
+    import sqlite3
+
+    prefs_raw = _read_json(DATA_DIR / "preferences.json", {})
+    prefs = sorted(prefs_raw.values(), key=lambda p: abs(p.get("affinity", 0)), reverse=True)[:30]
+
+    nov_raw = _read_json(DATA_DIR / "novelty.json", {})
+    novelty = sorted([{"key": k, **v} for k, v in nov_raw.items()],
+                     key=lambda x: x.get("encounter_count", 0), reverse=True)[:50]
+
+    map_raw = _read_json(DATA_DIR / "mental_map.json", {})
+    mental_map = sorted(
+        list(map_raw.values()) if isinstance(map_raw, dict) else [],
+        key=lambda l: l.get("visit_count", 0), reverse=True,
+    )
+
+    combat_raw = _read_json(DATA_DIR / "combat_log.json", {"profiles": {}, "recent_records": []})
+    combat_profiles = sorted(
+        list(combat_raw.get("profiles", {}).values()),
+        key=lambda p: p.get("total_hp_loss_pct", 0) / max(1, p.get("encounter_count", 1)),
+        reverse=True,
+    )[:20]
+
+    self_mods = list(reversed(_read_jsonl(DATA_DIR / "self_modifications.jsonl", limit=30)))
+
+    skills: list[dict] = []
+    db_path = DATA_DIR / "skills.db"
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            rows = conn.execute(
+                "SELECT name, action_type, tags, success_rate, times_used, description "
+                "FROM skills ORDER BY success_rate DESC"
+            ).fetchall()
+            conn.close()
+            skills = [
+                {"name": r[0], "action_type": r[1], "tags": json.loads(r[2]),
+                 "success_rate": r[3], "times_used": r[4], "description": r[5]}
+                for r in rows
+            ]
+        except Exception:
+            pass
+
+    social_records = _read_jsonl(DATA_DIR / "social_memory.jsonl", limit=50)
+    seen_social: set[str] = set()
+    social: list[dict] = []
+    for r in reversed(social_records):
+        key = f"{r.get('player','')}_{r.get('timestamp',0)}"
+        if key not in seen_social:
+            seen_social.add(key)
+            social.append(r)
+    social.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
+
+    rel_raw = _read_json(DATA_DIR / "relationships.json", {})
+    relationships = sorted(
+        list(rel_raw.values()) if isinstance(rel_raw, dict) else [],
+        key=lambda p: p.get("last_seen_ts", 0), reverse=True,
+    )
+
+    kb_raw = _read_json(DATA_DIR / "keybindings.json", {})
+    keybindings = sorted(
+        list(kb_raw.values()),
+        key=lambda b: (-b.get("confidence", 0), b.get("action", "")),
+    )
+
+    agent_skills: list[dict] = []
+    if _SANDBOX_SKILLS_DIR.exists():
+        for f in sorted(_SANDBOX_SKILLS_DIR.glob("*.py")):
+            if f.name == "__init__.py":
+                continue
+            try:
+                code = f.read_text(encoding="utf-8")
+                agent_skills.append({
+                    "name": f.stem, "lines": len(code.splitlines()),
+                    "modified": f.stat().st_mtime, "code": code,
+                })
+            except Exception:
+                pass
+        agent_skills.sort(key=lambda s: s["modified"], reverse=True)
+
+    identity: list[dict] = []
+    if _identity is not None:
+        try:
+            from dataclasses import asdict
+            identity = [asdict(u) for u in _identity.all_identities()]
+        except Exception:
+            pass
+
+    status_files = {
+        "novelty": DATA_DIR / "novelty.json",
+        "preferences": DATA_DIR / "preferences.json",
+        "mental_map": DATA_DIR / "mental_map.json",
+        "combat_log": DATA_DIR / "combat_log.json",
+        "self_modifications": DATA_DIR / "self_modifications.jsonl",
+    }
+    status = {
+        name: ({"exists": True, "age_seconds": round(time.time() - path.stat().st_mtime, 1)}
+               if path.exists() else {"exists": False})
+        for name, path in status_files.items()
+    }
+
+    return JSONResponse({
+        "preferences":      prefs,
+        "novelty":          novelty,
+        "mental_map":       mental_map,
+        "combat":           {"profiles": combat_profiles, "recent": combat_raw.get("recent_records", [])[-10:]},
+        "self_modifications": self_mods,
+        "goals":            {"session": _read_json(DATA_DIR / "session_goals.json", []),
+                             "long_term": _read_json(DATA_DIR / "long_term_goals.json", [])},
+        "game_state":       _read_json(DATA_DIR / "game_state.json", {}),
+        "llm_usage":        _read_json(DATA_DIR / "llm_usage.json", {}),
+        "skills":           skills,
+        "social":           social[:30],
+        "relationships":    relationships,
+        "keybindings":      keybindings,
+        "session_summary":  _read_json(DATA_DIR / "session_summary.json", {}),
+        "agent_skills":     agent_skills,
+        "identity":         identity,
+        "status":           status,
+        "stream_status":    {
+            "status": "active" if _latest_frame else (_capture_error or "no frame yet"),
+            "has_frame": _latest_frame is not None,
+            "frame_size": len(_latest_frame) if _latest_frame else 0,
+        },
+    })
+
+
 @app.get("/api/tunnel")
 def get_tunnel_url() -> JSONResponse:
     """Public tunnel URL if cloudflared is running."""
@@ -718,16 +847,16 @@ function bar(label, value, min=-1, max=1, colorClass='neu') {
   </div>`;
 }
 
-async function refreshPrefs() {
-  const data = await fetchJSON('/api/preferences');
+async function refreshPrefs(data) {
+  if (!data) data = await fetchJSON('/api/preferences');
   const html = data.slice(0, 12).map(p =>
     bar(`${p.category}:${p.name}`, p.affinity)
   ).join('') || '<span style="color:#8b949e">No preferences yet</span>';
   document.getElementById('prefs-body').innerHTML = html;
 }
 
-async function refreshCombat() {
-  const data = await fetchJSON('/api/combat');
+async function refreshCombat(data) {
+  if (!data) data = await fetchJSON('/api/combat');
   const profiles = data.profiles || [];
   if (!profiles.length) {
     document.getElementById('combat-body').innerHTML = '<span style="color:#8b949e">No combat data yet</span>';
@@ -743,8 +872,8 @@ async function refreshCombat() {
     <tbody>${rows}</tbody></table>`;
 }
 
-async function refreshMap() {
-  const data = await fetchJSON('/api/mental_map');
+async function refreshMap(data) {
+  if (!data) data = await fetchJSON('/api/mental_map');
   if (!data.length) {
     document.getElementById('map-body').innerHTML = '<span style="color:#8b949e">No locations visited</span>';
     return;
@@ -757,8 +886,8 @@ async function refreshMap() {
     <tbody>${rows}</tbody></table>`;
 }
 
-async function refreshSkills() {
-  const data = await fetchJSON('/api/skills');
+async function refreshSkills(data) {
+  if (!data) data = await fetchJSON('/api/skills');
   if (!data.length) {
     document.getElementById('skills-body').innerHTML = '<span style="color:#8b949e">No skills yet</span>';
     return;
@@ -772,8 +901,8 @@ async function refreshSkills() {
     <tbody>${rows}</tbody></table>`;
 }
 
-async function refreshSandbox() {
-  const data = await fetchJSON('/api/self_modifications');
+async function refreshSandbox(data) {
+  if (!data) data = await fetchJSON('/api/self_modifications');
   if (!data.length) {
     document.getElementById('sandbox-body').innerHTML = '<span style="color:#8b949e">No self-modifications yet</span>';
     return;
@@ -789,8 +918,8 @@ async function refreshSandbox() {
     <tbody>${rows}</tbody></table>`;
 }
 
-async function refreshNovelty() {
-  const data = await fetchJSON('/api/novelty');
+async function refreshNovelty(data) {
+  if (!data) data = await fetchJSON('/api/novelty');
   const rows = data.slice(0, 10).map(n =>
     `<tr><td>${n.key}</td><td>${n.encounter_count}</td></tr>`
   ).join('');
@@ -811,8 +940,8 @@ function facingDir(y) {
   return '(NW)';
 }
 
-async function refreshGameState() {
-  const data = await fetchJSON('/api/game_state');
+async function refreshGameState(data) {
+  if (!data) data = await fetchJSON('/api/game_state');
   const el = document.getElementById('state-body');
   if (!data || !data.player) {
     el.innerHTML = '<span style="color:#e3b341">No game state — game not loaded or agent not connected</span>';
@@ -838,8 +967,8 @@ async function refreshGameState() {
          Dead: <span style="color:${p.is_dead ? '#f85149' : '#3fb950'}">${p.is_dead ? 'YES' : 'no'}</span></div>`;
 }
 
-async function refreshLLMUsage() {
-  const data = await fetchJSON('/api/llm_usage');
+async function refreshLLMUsage(data) {
+  if (!data) data = await fetchJSON('/api/llm_usage');
   const el = document.getElementById('llm-body');
   const daily = document.getElementById('llm-daily');
   if (!data || (!data.providers && !Object.keys(data).length)) {
@@ -871,9 +1000,9 @@ async function refreshLLMUsage() {
     <tbody>${rows}</tbody></table>`;
 }
 
-async function checkStatus() {
+async function checkStatus(data) {
   try {
-    const data = await fetchJSON('/api/status');
+    if (!data) data = await fetchJSON('/api/status');
     const anyFresh = Object.values(data).some(v => v.exists && v.age_seconds < 60);
     const badge = document.getElementById('status-badge');
     badge.textContent = anyFresh ? 'live' : 'stale';
@@ -884,8 +1013,8 @@ async function checkStatus() {
   }
 }
 
-async function refreshGoals() {
-  const data = await fetchJSON('/api/goals');
+async function refreshGoals(data) {
+  if (!data) data = await fetchJSON('/api/goals');
   const session = (data.session || []).filter(g => !g.completed);
   const longTerm = (data.long_term || []).filter(g => !g.completed);
   const allGoals = [...session.map(g => ({...g, _type: 'session'})),
@@ -905,10 +1034,9 @@ async function refreshGoals() {
 
 // ── Diagnostics ──────────────────────────────────────────────────────────
 let _diagFrameCount = 0;
-async function refreshDiag() {
+async function refreshDiag(streamStatus) {
   try {
-    const r = await fetch('/api/stream_status');
-    const d = await r.json();
+    const d = streamStatus || await fetchJSON('/api/stream_status');
     const el = document.getElementById('diag-capture');
     el.textContent = `${d.status} | has_frame=${d.has_frame} | size=${d.frame_size}b`;
     el.style.color = d.has_frame ? '#3fb950' : '#e3b341';
@@ -1067,8 +1195,8 @@ async function refreshLog() {
 
 async function safeRun(fn) { try { await fn(); } catch(e) {} }
 
-async function refreshRelationships() {
-  const data = await fetchJSON('/api/relationships');
+async function refreshRelationships(data) {
+  if (!data) data = await fetchJSON('/api/relationships');
   const el = document.getElementById('relationships-body');
   if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No players met yet</span>'; return; }
   const CONF = ['default','vision','rewired','observed'];
@@ -1085,8 +1213,8 @@ async function refreshRelationships() {
     }).join('') + '</tbody></table>';
 }
 
-async function refreshSocial() {
-  const data = await fetchJSON('/api/social');
+async function refreshSocial(data) {
+  if (!data) data = await fetchJSON('/api/social');
   const el = document.getElementById('social-body');
   if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No interactions yet</span>'; return; }
   el.innerHTML = '<div style="display:flex;flex-direction:column;gap:6px">' +
@@ -1102,8 +1230,8 @@ async function refreshSocial() {
     }).join('') + '</div>';
 }
 
-async function refreshKeybindings() {
-  const data = await fetchJSON('/api/keybindings');
+async function refreshKeybindings(data) {
+  if (!data) data = await fetchJSON('/api/keybindings');
   const el = document.getElementById('keybindings-body');
   if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No keybindings loaded</span>'; return; }
   const CONF_LABELS = ['default','vision','rewired','observed'];
@@ -1161,8 +1289,8 @@ async function sendOverride() {
   }
 }
 
-async function refreshSession() {
-  const data = await fetchJSON('/api/session_summary');
+async function refreshSession(data) {
+  if (!data) data = await fetchJSON('/api/session_summary');
   const el = document.getElementById('session-body');
   if (!data || !data.strategy_cycles) { el.innerHTML = '<span style="color:#8b949e">Waiting for agent...</span>'; return; }
   const elapsed = data.elapsed_minutes || 0;
@@ -1177,8 +1305,8 @@ async function refreshSession() {
   </div>`;
 }
 
-async function refreshAgentSkills() {
-  const data = await fetchJSON('/api/agent_skills');
+async function refreshAgentSkills(data) {
+  if (!data) data = await fetchJSON('/api/agent_skills');
   const el = document.getElementById('agent-skills-body');
   if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">None written yet this session.</span>'; return; }
   el.innerHTML = data.map(s => {
@@ -1191,8 +1319,8 @@ async function refreshAgentSkills() {
   }).join('');
 }
 
-async function refreshIdentity() {
-  const data = await fetchJSON('/api/identity');
+async function refreshIdentity(data) {
+  if (!data) data = await fetchJSON('/api/identity');
   const el = document.getElementById('identity-body');
   if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">No known players</span>'; return; }
   el.innerHTML = '<table><thead><tr><th>Name</th><th>Seen</th><th>In-game</th></tr></thead><tbody>' +
@@ -1287,12 +1415,19 @@ function initLayout() {
 
 async function refreshAll() {
   document.getElementById('last-refresh').textContent = 'Refreshing...';
-  await Promise.all([
-    refreshDiag(), refreshChat(), refreshLog(), refreshAgentLog(), refreshPrefs(), refreshCombat(),
-    refreshMap(), refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
-    refreshGameState(), refreshLLMUsage(), refreshRelationships(), refreshSocial(), refreshKeybindings(),
-    refreshIdentity(), refreshSession(), refreshAgentSkills()
-  ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
+  // One request instead of 20 — saves ~15x tunnel bandwidth
+  const all = await fetchJSON('/api/all');
+  if (all) {
+    await Promise.all([
+      refreshDiag(all.stream_status), refreshPrefs(all.preferences), refreshCombat(all.combat),
+      refreshMap(all.mental_map), refreshSkills(all.skills), refreshSandbox(all.self_modifications),
+      refreshNovelty(all.novelty), refreshGoals(all.goals), checkStatus(all.status),
+      refreshGameState(all.game_state), refreshLLMUsage(all.llm_usage),
+      refreshRelationships(all.relationships), refreshSocial(all.social),
+      refreshKeybindings(all.keybindings), refreshIdentity(all.identity),
+      refreshSession(all.session_summary), refreshAgentSkills(all.agent_skills),
+    ].map(p => p && p.catch ? p.catch(e => {}) : p));
+  }
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }
 

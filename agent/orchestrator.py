@@ -216,6 +216,12 @@ class Orchestrator:
         self._nav_pos_snapshot: tuple[float, float] = (0.0, 0.0)  # (x, z) at last check
         self._nav_snapshot_time: float = 0.0
         self._nav_check_interval: float = 5.0  # seconds between position checks
+        self._nav_stuck_count: int = 0  # consecutive stuck events at same position
+
+        # Session tracking — written to data/session_summary.json each strategy cycle
+        self._session_start: float = time.time()
+        self._session_cycles: int = 0
+
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Wire up game event handlers
@@ -240,16 +246,14 @@ class Orchestrator:
     # ── Event handlers ──────────────────────────────────────────────────────
 
     async def _on_connected(self, _msg: dict) -> None:
-        """Sync autonomous mode flag and read initial skill list."""
+        """Sync autonomous mode flag, scan, and kick off first strategy immediately."""
         await self._game.set_autonomous(self._autonomous_movement)
         logger.info(f"Synced autonomous_movement={self._autonomous_movement} to mod")
         await self._game.read_skills()
-        # VisionAutoLoader disabled — manually load into game before starting agent.
-        # Re-enable later using menu_query_state structured data (no vision needed).
-        # if self._loader_task and not self._loader_task.done():
-        #     self._loader_task.cancel()
-        # loader = VisionAutoLoader(self._game, self._config)
-        # self._loader_task = asyncio.create_task(loader.run())
+        # Scan immediately so the first strategy call has nearby objects to reason about
+        await self._game.scan_nearby(radius=40.0)
+        # Fire first strategy decision now — don't make the agent sit idle for 10s
+        asyncio.create_task(self._run_strategy())
 
     async def _on_game_state(self, msg: dict) -> None:
         prev_state = self._current_state
@@ -296,19 +300,23 @@ class Orchestrator:
                 sx, sz = self._nav_pos_snapshot
                 dist_moved = math.sqrt((px - sx) ** 2 + (pz - sz) ** 2)
                 if dist_moved < 0.5:
-                    self._nav_stuck_count = getattr(self, "_nav_stuck_count", 0) + 1
-                    logger.warning(f"[Nav] Position unchanged (stuck #{self._nav_stuck_count}) — trying escape")
+                    self._nav_stuck_count += 1
+                    logger.warning(f"[Nav] Stuck #{self._nav_stuck_count} at ({px:.0f},{pz:.0f})")
                     self._is_navigating = False
-                    if self._nav_stuck_count <= 3:
-                        # Try a random escape direction before re-planning
+                    if self._nav_stuck_count <= 2:
+                        # Short random escape step — try to get off the obstacle
                         angle = random.uniform(0, 2 * math.pi)
-                        ex = px + math.sin(angle) * 8.0
-                        ez = pz + math.cos(angle) * 8.0
+                        ex = px + math.sin(angle) * 5.0
+                        ez = pz + math.cos(angle) * 5.0
                         await self._navigate_to(ex, py, ez, run=False)
-                        await self._game.say(f"I seem to be stuck. Trying a different angle.")
                     else:
+                        # Truly stuck — mark target blocked and re-plan
                         self._nav_stuck_count = 0
-                        await self._game.say("I can't seem to move from here. Re-evaluating.")
+                        tx, tz = self._current_nav_target
+                        if tx != 0.0 or tz != 0.0:
+                            self._mark_nav_blocked(tx, tz)
+                            scene = self._current_state.get("scene", "unknown")
+                            self._map.add_note(scene, f"nav stuck near ({tx:.0f},{tz:.0f})")
                         asyncio.create_task(self._run_strategy())
                 else:
                     self._nav_stuck_count = 0
@@ -1056,6 +1064,31 @@ Pending player messages: {self._pending_chat}{prior_life_ctx}"""
 
         # Add observations to mental map
         self._record_mental_map_notes()
+
+        # Update session summary
+        self._session_cycles += 1
+        self._write_session_summary()
+
+    def _write_session_summary(self) -> None:
+        """Write a brief session summary to data/session_summary.json for dashboard."""
+        try:
+            agent_skills = self._sandbox.list_skills()
+            summary = {
+                "session_start": self._session_start,
+                "elapsed_minutes": round((time.time() - self._session_start) / 60, 1),
+                "strategy_cycles": self._session_cycles,
+                "agent_skills": [
+                    {"name": s.name, "calls": s.times_called, "successes": s.times_succeeded}
+                    for s in agent_skills
+                ],
+                "scenes_visited": [l.scene for l in self._map.most_familiar(20)],
+                "active_goals": [g.description for g in self._goals.active_session_goals()],
+            }
+            Path("./data/session_summary.json").write_text(
+                json.dumps(summary, indent=2), encoding="utf-8"
+            )
+        except Exception as e:
+            logger.debug(f"[Session] Summary write failed: {e}")
 
     def _build_prior_life_context(self) -> str:
         """

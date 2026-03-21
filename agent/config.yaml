@@ -76,13 +76,13 @@ llm:
       enabled: true
 
 agent:
-  strategy_interval: 30     # How often the strategy loop fires (seconds)
+  strategy_interval: 10     # How often the strategy loop fires (seconds)
   rule_interval: 2           # How often the rule engine fires (seconds)
   max_retries: 3             # Max retries before escalating to Josh via chat
   chat_name: Voyager
   # When false: player movement commands execute directly (dev/control mode)
-  # When true: movement goes through agent's decision layer (autonomous mode)
-  autonomous_movement: false
+  # When true: agent drives camera + movement autonomously
+  autonomous_movement: true
 
 memory:
   chroma_path: ./data/chroma

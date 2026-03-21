@@ -364,6 +364,39 @@ def post_override(body: OverrideCommand) -> JSONResponse:
     return JSONResponse({"ok": True, "command": command})
 
 
+@app.get("/api/session_summary")
+def get_session_summary() -> JSONResponse:
+    """Current session summary — strategy cycles, skills written, scenes visited."""
+    return JSONResponse(_read_json(DATA_DIR / "session_summary.json", {}))
+
+
+_SANDBOX_SKILLS_DIR = Path(__file__).parent.parent / "agent" / "sandbox" / "skills"
+
+
+@app.get("/api/agent_skills")
+def get_agent_skills() -> JSONResponse:
+    """Python skills the agent has written itself (sandbox/skills/*.py)."""
+    if not _SANDBOX_SKILLS_DIR.exists():
+        return JSONResponse([])
+    skills = []
+    for f in sorted(_SANDBOX_SKILLS_DIR.glob("*.py")):
+        if f.name == "__init__.py":
+            continue
+        try:
+            code = f.read_text(encoding="utf-8")
+            stat = f.stat()
+            skills.append({
+                "name": f.stem,
+                "lines": len(code.splitlines()),
+                "modified": stat.st_mtime,
+                "code": code,
+            })
+        except Exception:
+            pass
+    skills.sort(key=lambda s: s["modified"], reverse=True)
+    return JSONResponse(skills)
+
+
 @app.get("/api/tunnel")
 def get_tunnel_url() -> JSONResponse:
     """Public tunnel URL if cloudflared is running."""
@@ -623,6 +656,14 @@ td { padding: 4px 8px; border-bottom: 1px solid #21262d; }
   <div class="card" id="card-identity">
     <h2>Known Players</h2>
     <div id="identity-body">Loading...</div>
+  </div>
+  <div class="card" id="card-session">
+    <h2>This Session</h2>
+    <div id="session-body">Loading...</div>
+  </div>
+  <div class="card" id="card-agent-skills">
+    <h2>Agent-Written Skills</h2>
+    <div id="agent-skills-body">Loading...</div>
   </div>
 </main>
 <script>
@@ -1085,6 +1126,36 @@ async function sendOverride() {
   }
 }
 
+async function refreshSession() {
+  const data = await fetchJSON('/api/session_summary');
+  const el = document.getElementById('session-body');
+  if (!data || !data.strategy_cycles) { el.innerHTML = '<span style="color:#8b949e">Waiting for agent...</span>'; return; }
+  const elapsed = data.elapsed_minutes || 0;
+  const h = Math.floor(elapsed / 60), m = Math.floor(elapsed % 60);
+  const timeStr = h > 0 ? `${h}h ${m}m` : `${m}m`;
+  const goals = (data.active_goals || []).map(g => `<li>${g}</li>`).join('');
+  const scenes = (data.scenes_visited || []).slice(0, 5).join(', ') || 'none';
+  el.innerHTML = `<div style="font-size:0.82rem">
+    <b>Running:</b> ${timeStr} &nbsp; <b>Cycles:</b> ${data.strategy_cycles}<br>
+    <b>Scenes:</b> ${scenes}<br>
+    <b>Goals:</b><ul style="margin:4px 0 0 14px;padding:0">${goals || '<li style="color:#8b949e">none</li>'}</ul>
+  </div>`;
+}
+
+async function refreshAgentSkills() {
+  const data = await fetchJSON('/api/agent_skills');
+  const el = document.getElementById('agent-skills-body');
+  if (!data || !data.length) { el.innerHTML = '<span style="color:#8b949e">None written yet this session.</span>'; return; }
+  el.innerHTML = data.map(s => {
+    const d = new Date(s.modified * 1000).toLocaleTimeString();
+    return `<div style="margin-bottom:6px">
+      <b>${s.name}</b> <span style="color:#8b949e;font-size:0.78rem">${s.lines} lines · ${d}</span>
+      <details style="margin-top:2px"><summary style="cursor:pointer;color:#58a6ff;font-size:0.78rem">show code</summary>
+      <pre style="font-size:0.72rem;background:#0d1117;padding:6px;border-radius:4px;overflow-x:auto;margin-top:4px">${s.code.replace(/</g,'&lt;')}</pre></details>
+    </div>`;
+  }).join('');
+}
+
 async function refreshIdentity() {
   const data = await fetchJSON('/api/identity');
   const el = document.getElementById('identity-body');
@@ -1126,7 +1197,9 @@ var _DEFAULT_LAYOUT = {
   'card-social':         {left:940,  top:980,  width:440, height:340},
   'card-keybindings':    {left:1400, top:980,  width:340, height:340},
   'card-override':       {left:20,   top:1340, width:440, height:300},
-  'card-identity':       {left:480,  top:1340, width:440, height:260}
+  'card-identity':       {left:480,  top:1340, width:440, height:260},
+  'card-session':        {left:940,  top:1340, width:340, height:260},
+  'card-agent-skills':   {left:1300, top:1340, width:440, height:400}
 };
 
 function _saveLayout() {
@@ -1183,7 +1256,7 @@ async function refreshAll() {
     refreshDiag(), refreshChat(), refreshLog(), refreshAgentLog(), refreshPrefs(), refreshCombat(),
     refreshMap(), refreshSkills(), refreshSandbox(), refreshNovelty(), refreshGoals(), checkStatus(),
     refreshGameState(), refreshLLMUsage(), refreshRelationships(), refreshSocial(), refreshKeybindings(),
-    refreshIdentity()
+    refreshIdentity(), refreshSession(), refreshAgentSkills()
   ].map(p => p.catch ? p.catch(e => { document.getElementById('diag-error').textContent = String(e); }) : p));
   document.getElementById('last-refresh').textContent = 'Last refresh: ' + new Date().toLocaleTimeString();
 }

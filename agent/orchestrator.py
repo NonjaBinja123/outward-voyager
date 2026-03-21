@@ -72,7 +72,9 @@ class Orchestrator:
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
         self._connected: bool = False
+        self._first_connect: bool = True   # fire strategy only on the very first connect
         self._last_scan_time: float = 0.0
+        self._watcher_task: asyncio.Task | None = None  # only one watcher at a time
         # Pending player chat messages waiting to be included in next think()
         self._pending_chat: list[str] = []
 
@@ -131,19 +133,25 @@ class Orchestrator:
         await self._game.set_autonomous(self._autonomous)
         await self._game.read_skills()
         await self._scan_scene()
-        # Delay first think by 3s so at least one game_state arrives first
-        async def _delayed_start():
-            await asyncio.sleep(3.0)
-            if not self._loading_screen_active:  # only fire if still connected
-                self._bus.on_strategy_request("just connected")
-        self._connect_task = asyncio.create_task(_delayed_start())
+        # Fire strategy only on the very first connect of this session.
+        # After that, scene_changed events drive new-area thinking.
+        # Reconnects from scene transitions do NOT fire strategy — prevents spam.
+        if self._first_connect:
+            self._first_connect = False
+            async def _delayed_start():
+                await asyncio.sleep(3.0)
+                if self._connected and not self._loading_screen_active:
+                    self._bus.on_strategy_request("just connected")
+            self._connect_task = asyncio.create_task(_delayed_start())
 
     async def _on_disconnected(self, _msg: dict) -> None:
         self._connected = False
         self._loading_screen_active = True
         if hasattr(self, '_connect_task') and not self._connect_task.done():
             self._connect_task.cancel()
-        asyncio.create_task(self._loading_screen_watcher())
+        # Only start one watcher at a time
+        if self._watcher_task is None or self._watcher_task.done():
+            self._watcher_task = asyncio.create_task(self._loading_screen_watcher())
 
     async def _on_game_state(self, msg: dict) -> None:
         # Persist for dashboard

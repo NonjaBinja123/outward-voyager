@@ -287,8 +287,10 @@ class Orchestrator:
             hints = self._screen_reader.interaction_hints(data)
             for h in hints:
                 self._keybindings.record_observation(h["action"], h["key"])
-            # Surface hints to EventBus — LLM decides whether to press the key
-            if hints or data.get("all_text"):
+            # Surface text/hints to EventBus as context only — LLM uses this to
+            # understand what's on screen but does NOT press keys automatically.
+            # Agent should use trigger_interaction with real UIDs, not key presses.
+            if data.get("all_text"):
                 self._bus.on_screen_read(data)
         except Exception as e:
             logger.warning(f"[Screen] read error: {e}")

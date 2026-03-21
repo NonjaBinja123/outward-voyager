@@ -752,11 +752,22 @@ public class ActionExecutor
     // ── Windows key injection ────────────────────────────────────────────────
 
     [DllImport("user32.dll")] private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, IntPtr dwExtraInfo);
+    [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     private const uint KEYEVENTF_KEYUP = 0x0002;
 
-    /// <summary>Send a virtual key press + release to the focused window.</summary>
+    /// <summary>
+    /// Send a virtual key press + release — ONLY if the game window has focus.
+    /// keybd_event targets the OS-focused window, so pressing while the player
+    /// is typing elsewhere would inject keystrokes into whatever they're typing in.
+    /// </summary>
     private static void PressKey(byte vk)
     {
+        var gameWindow = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+        if (GetForegroundWindow() != gameWindow)
+        {
+            Plugin.Log.LogWarning($"[Key] Skipped VK 0x{vk:X2} — game window not focused");
+            return;
+        }
         keybd_event(vk, 0, 0, IntPtr.Zero);
         System.Threading.Thread.Sleep(50);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);

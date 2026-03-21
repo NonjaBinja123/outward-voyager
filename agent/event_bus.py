@@ -111,8 +111,8 @@ class EventBus:
     def on_player_chat(self, text: str, speaker: str = "") -> None:
         self._enqueue(GameEvent("player_chat", {"text": text, "speaker": speaker}))
 
-    def on_dashboard_chat(self, text: str) -> None:
-        self._enqueue(GameEvent("dashboard_chat", {"text": text}))
+    def on_dashboard_chat(self, text: str, speaker: str = "") -> None:
+        self._enqueue(GameEvent("dashboard_chat", {"text": text, "speaker": speaker or "Dashboard"}))
 
     def on_action_failed(self, action: str, reason: str = "") -> None:
         # Do NOT enqueue — action failures should NOT immediately re-trigger the LLM.

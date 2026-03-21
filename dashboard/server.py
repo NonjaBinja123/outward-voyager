@@ -220,6 +220,7 @@ def get_chat() -> JSONResponse:
 
 class ChatMessage(BaseModel):
     message: str
+    sender: str = ""
 
 
 @app.post("/api/chat")
@@ -227,13 +228,18 @@ def post_chat(body: ChatMessage) -> JSONResponse:
     message = body.message.strip()
     if not message:
         raise HTTPException(status_code=400, detail="empty message")
+    sender = body.sender.strip() or "Guest"
     pending_path = DATA_DIR / "pending_dashboard_chat.json"
     try:
         existing: list = json.loads(pending_path.read_text(encoding="utf-8")) if pending_path.exists() else []
     except Exception:
         existing = []
-    existing.append({"timestamp": time.time(), "message": message})
+    existing.append({"timestamp": time.time(), "message": message, "sender": sender})
     pending_path.write_text(json.dumps(existing), encoding="utf-8")
+    # Also log it so the chat panel shows it immediately
+    log_path = DATA_DIR / "chat_log.jsonl"
+    with log_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"timestamp": time.time(), "role": "dashboard", "message": message, "name": sender}) + "\n")
     return JSONResponse({"ok": True})
 
 
@@ -979,8 +985,9 @@ async function refreshChat() {
   const log = document.getElementById('chat-log');
   log.innerHTML = data.map(entry => {
     const isVoyager = entry.role === 'voyager';
-    const name = isVoyager ? 'Voyager' : (localStorage.getItem('voy_name') || entry.name || 'Player');
-    const color = isVoyager ? '#58a6ff' : '#3fb950';
+    const isDashboard = entry.role === 'dashboard';
+    const name = isVoyager ? 'Voyager' : (entry.name || (isDashboard ? 'Guest' : 'Player'));
+    const color = isVoyager ? '#58a6ff' : isDashboard ? '#e3b341' : '#3fb950';
     const ts = new Date(entry.timestamp * 1000).toLocaleTimeString();
     return `<div style="display:flex;gap:8px;align-items:flex-start">
       <span style="color:${color};font-weight:600;white-space:nowrap;font-size:0.82rem">${name}</span>
@@ -999,7 +1006,7 @@ async function sendChat() {
   await fetch('/api/chat', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({message})
+    body: JSON.stringify({message, sender: localStorage.getItem('voy_name') || 'Guest'})
   });
   setTimeout(refreshChat, 500);
 }

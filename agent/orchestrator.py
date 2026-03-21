@@ -140,10 +140,11 @@ class Orchestrator:
                 path.write_text("", encoding="utf-8")
                 msgs = json.loads(text) if text.startswith("[") else [{"text": text}]
                 for m in msgs:
-                    msg_text = m.get("text", "")
+                    msg_text = m.get("text", "") or m.get("message", "")
+                    sender = m.get("sender", "").strip() or "Guest"
                     if msg_text:
-                        self._pending_chat.append(f"[dashboard] {msg_text}")
-                        self._bus.on_dashboard_chat(msg_text)
+                        self._pending_chat.append(f"{sender} (dashboard): {msg_text}")
+                        self._bus.on_dashboard_chat(msg_text, speaker=sender)
             except Exception as e:
                 logger.warning(f"[Dashboard] Chat poll error: {e}")
 

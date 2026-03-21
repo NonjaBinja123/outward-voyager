@@ -201,6 +201,8 @@ class Orchestrator:
             self._visited_nav[self._nav_cell(px, pz)] = time.time()
             tx, tz = self._state.nav_target
             self._visited_nav[self._nav_cell(tx, tz)] = time.time()
+            # Also mark the target as blocked in StateManager so dispatcher hard-rejects it
+            self._state.mark_blocked(tx, tz)
             # Count consecutive stucks near the same player position
             current_cell = self._nav_cell(px, pz)
             if current_cell == self._last_stuck_cell:

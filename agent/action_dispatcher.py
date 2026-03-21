@@ -90,6 +90,10 @@ class ActionDispatcher:
                         f"navigate_to requires x and z coordinates, got: {params}"
                     )
                 x, z = float(pos["x"]), float(pos["z"])
+                # Hard-block navigation to known-unreachable cells
+                if self._state.is_blocked(x, z):
+                    logger.warning(f"[Dispatcher] navigate_to ({x:.0f},{z:.0f}) is blocked — skipping")
+                    return
                 await c.navigate_to(x, float(pos.get("y", 0)), z)
                 self._state.set_navigating(x, z)  # enable wait_for_arrival polling
 

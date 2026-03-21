@@ -63,7 +63,9 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
             tunnel_hostname=dash_cfg.get("tunnel_hostname", "") or "",
         )
         await _tunnel.start()
+    watcher_task = asyncio.create_task(_file_watcher())
     yield
+    watcher_task.cancel()
     if _tunnel is not None:
         await _tunnel.stop()
         _tunnel = None
@@ -556,6 +558,36 @@ def get_tunnel_url() -> JSONResponse:
 _latest_frame: bytes | None = None  # GIL makes byte reference assignment atomic
 _capture_error: str = ""
 
+# ── WebSocket client registry + file-change push ──────────────────────────────
+_ws_clients: set["WebSocket"] = set()
+_file_mtimes: dict[str, float] = {}
+
+
+async def _file_watcher() -> None:
+    """Watch key files; push a JSON notification to all WebSocket clients on change."""
+    watched = {
+        "chat":      DATA_DIR / "chat_log.jsonl",
+        "agent_log": DATA_DIR.parent / "logs" / "voyager.log",
+        "log":       BEPINEX_LOG,
+    }
+    while True:
+        await asyncio.sleep(1.0)
+        for key, path in watched.items():
+            try:
+                mtime = path.stat().st_mtime if path.exists() else 0.0
+            except OSError:
+                continue
+            if _file_mtimes.get(key) != mtime:
+                _file_mtimes[key] = mtime
+                msg = json.dumps({"type": key})
+                dead: set = set()
+                for client in list(_ws_clients):
+                    try:
+                        await client.send_text(msg)
+                    except Exception:
+                        dead.add(client)
+                _ws_clients -= dead
+
 
 def _capture_loop() -> None:
     global _latest_frame, _capture_error
@@ -619,6 +651,7 @@ def stream_status() -> JSONResponse:
 @app.websocket("/ws/stream")
 async def stream_ws(ws: WebSocket) -> None:
     await ws.accept()
+    _ws_clients.add(ws)
     try:
         while True:
             frame = _latest_frame
@@ -627,6 +660,8 @@ async def stream_ws(ws: WebSocket) -> None:
             await asyncio.sleep(1 / 15)
     except (WebSocketDisconnect, Exception):
         pass
+    finally:
+        _ws_clients.discard(ws)
 
 
 # ── Dashboard HTML ───────────────────────────────────────────────────────────
@@ -1079,13 +1114,22 @@ async function refreshDiag(streamStatus) {
       document.getElementById('diag-ws').style.color = '#3fb950';
     };
     ws.onmessage = e => {
+      // Text messages = file-change notifications from server
+      if (typeof e.data === 'string') {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'chat') refreshChat();
+          else if (msg.type === 'agent_log') refreshAgentLog();
+          else if (msg.type === 'log') refreshLog();
+        } catch {}
+        return;
+      }
+      // Binary = JPEG game frame
       _diagFrameCount++;
       document.getElementById('diag-frames').textContent = _diagFrameCount + ' (size=' + e.data.size + 'b)';
       document.getElementById('diag-frames').style.color = '#3fb950';
       const reader = new FileReader();
-      reader.onload = () => {
-        img.src = reader.result;
-      };
+      reader.onload = () => { img.src = reader.result; };
       reader.onerror = err => {
         document.getElementById('diag-error').textContent = 'FileReader error: ' + err;
       };
@@ -1453,11 +1497,13 @@ initLayout();
 refreshAll();
 refreshTunnelUrl();
 setInterval(refreshAll, 10000);
-setInterval(refreshTunnelUrl, 15000);  // poll for tunnel URL
-setInterval(refreshLog, 2000);       // live BepInEx log
-setInterval(refreshAgentLog, 3000);  // live agent log
-setInterval(refreshChat, 3000);  // fast chat updates
-setInterval(refreshGameState, 5000);  // game state every 5s
+setInterval(refreshTunnelUrl, 15000);
+// Chat, logs, game_state are pushed via WebSocket on file change (see ws.onmessage above).
+// These slow fallback polls catch anything missed during a WebSocket reconnect gap.
+setInterval(refreshChat, 30000);
+setInterval(refreshAgentLog, 30000);
+setInterval(refreshLog, 30000);
+setInterval(refreshGameState, 5000);  // game state every 5s (no file-change push)
 </script>
 </body>
 </html>"""

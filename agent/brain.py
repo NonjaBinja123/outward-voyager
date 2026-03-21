@@ -125,10 +125,17 @@ class Brain:
 
     # ── Prompt builders ───────────────────────────────────────────────────────
 
+    # Fallback action list when no adapter_info has been received
+    _FALLBACK_ACTIONS = (
+        "navigate_to, wait_for_arrival, stop_navigation, move, "
+        "look_direction, trigger_interaction, press_key, use_item, "
+        "equip_item, drop_item, say, wait, wait_for_state"
+    )
+
     def _build_system(self, *, strategy: bool) -> str:
         game = self._registry.current()
         game_name = game.game_display_name if game else "Unknown Game"
-        actions = ", ".join(sorted(game.supported_actions)) if game else "unknown"
+        actions = ", ".join(sorted(game.supported_actions)) if game else self._FALLBACK_ACTIONS
         caps = str(game.capabilities) if game else "{}"
         template = _STRATEGY_SYSTEM if strategy else _REACTIVE_SYSTEM
         return template.format(

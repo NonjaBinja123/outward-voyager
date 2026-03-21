@@ -95,7 +95,31 @@ class Orchestrator:
 
     async def run(self) -> None:
         self._bus.start()
-        await self._game.connect()
+        await asyncio.gather(
+            self._game.connect(),
+            self._poll_dashboard_chat(),
+        )
+
+    async def _poll_dashboard_chat(self) -> None:
+        """Poll pending_dashboard_chat.json for messages from the dashboard UI."""
+        path = Path("./data/pending_dashboard_chat.json")
+        while True:
+            await asyncio.sleep(1.0)
+            if not path.exists():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8").strip()
+                if not text:
+                    continue
+                path.write_text("", encoding="utf-8")
+                msgs = json.loads(text) if text.startswith("[") else [{"text": text}]
+                for m in msgs:
+                    msg_text = m.get("text", "")
+                    if msg_text:
+                        self._pending_chat.append(f"[dashboard] {msg_text}")
+                        self._bus.on_dashboard_chat(msg_text)
+            except Exception as e:
+                logger.warning(f"[Dashboard] Chat poll error: {e}")
 
     # ── Game event handlers ───────────────────────────────────────────────────
 

@@ -95,7 +95,7 @@ class ActionDispatcher:
                 )
 
             case "stop_navigation":
-                await c.stop_navigation()
+                await c.navigate_cancel()
 
             case "move":
                 await c.move(
@@ -105,11 +105,13 @@ class ActionDispatcher:
 
             # ── Camera ────────────────────────────────────────────────────
             case "look_direction":
-                await c.look_direction(
-                    float(params.get("horizontal", 0.0)),
-                    float(params.get("vertical", 0.0)),
-                    float(params.get("duration", 0.3)),
-                )
+                # face_point is the closest equivalent: point camera at world coords
+                if "x" in params and "z" in params:
+                    await c.face_point(
+                        float(params["x"]),
+                        float(params.get("y", 0.0)),
+                        float(params["z"]),
+                    )
 
             # ── Interaction ───────────────────────────────────────────────
             case "trigger_interaction":
@@ -125,7 +127,7 @@ class ActionDispatcher:
                 await c.equip_item(params.get("item_name", ""))
 
             case "drop_item":
-                await c.drop_item(params.get("item_name", ""))
+                logger.warning(f"[Dispatcher] drop_item not supported by game client, skipping")
 
             # ── Chat / social ─────────────────────────────────────────────
             case "say":

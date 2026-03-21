@@ -119,11 +119,20 @@ public class NavigationController : MonoBehaviour
         InputInjector.InjectedVertical = vertical;
         InputInjector.InjectedHorizontal = horizontal;
 
-        // In player-command mode, suppress Outward's camera auto-follow so the
-        // user can freely rotate the camera while the character walks toward the target.
-        // In autonomous mode, let auto-follow work (or agent drives camera explicitly).
-        if (!InputInjector.IsAutonomous)
+        if (InputInjector.IsAutonomous)
         {
+            // Autonomous mode: steer the camera to face the direction of travel.
+            // Proportional controller — full speed (1.0) at ≥45° off, fades to 0 within 5°.
+            float angleToTarget = Vector3.SignedAngle(camFwd, worldDir, Vector3.up);
+            InputInjector.InjectedCameraH = Mathf.Abs(angleToTarget) > 5f
+                ? Mathf.Clamp(angleToTarget / 45f, -1f, 1f)
+                : 0f;
+        }
+        else
+        {
+            // Player-command mode: suppress Outward's camera auto-follow so the
+            // user can freely rotate the camera while the character walks toward the target.
+            InputInjector.InjectedCameraH = 0f;
             var charCams = CharacterCamera.CharCamList;
             if (charCams != null && charCams.Count > 0)
                 charCams[0].m_cameraSmoothAutoInput = UnityEngine.Vector2.zero;
@@ -142,5 +151,6 @@ public class NavigationController : MonoBehaviour
         InputInjector.IsNavigating = false;
         InputInjector.InjectedVertical = 0f;
         InputInjector.InjectedHorizontal = 0f;
+        InputInjector.InjectedCameraH = 0f;
     }
 }

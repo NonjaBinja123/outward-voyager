@@ -119,3 +119,6 @@ class GameClient:
 
     async def close_menu(self) -> None:
         await self.send("close_menu")
+
+    async def press_key(self, key: str) -> None:
+        await self.send("press_key", {"key": key})

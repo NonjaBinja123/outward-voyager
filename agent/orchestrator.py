@@ -227,6 +227,7 @@ class Orchestrator:
 
         # Screen reader state
         self._loading_screen_active: bool = False
+        self._last_key_press_time: float = 0.0   # debounce for screen-triggered key presses
 
         # Action failure memory — item name → failure count this session
         # Persisted to journal so the agent can reason about what doesn't work
@@ -297,10 +298,31 @@ class Orchestrator:
                     description=tip,
                     emotional_tag="curious",
                 ))
-            # Update keybinding learner from interaction hints
-            for hint in self._screen_reader.interaction_hints(data):
+            # Update keybinding learner and react to visible interaction prompts
+            hints = self._screen_reader.interaction_hints(data)
+            for hint in hints:
                 self._keybindings.record_observation(hint["action"], hint["key"])
-            # Log anything else useful
+
+            # If there's a visible interaction prompt and we're not in the middle of
+            # something time-sensitive, press the key — agent reacts to what it sees
+            now = time.time()
+            in_combat = self._current_state.get("player", {}).get("in_combat", False)
+            if hints and not in_combat and now - self._last_key_press_time > 3.0:
+                hint = hints[0]
+                key = hint["key"]
+                action = hint["action"]
+                self._last_key_press_time = now
+                logger.info(f"[Screen] Pressing [{key.upper()}] for visible prompt: {action}")
+                await self._game.press_key(key)
+                scene = self._current_state.get("scene", "unknown")
+                self._journal.add(JournalEntry(
+                    scene=scene,
+                    event_type="screen_interaction",
+                    description=f"Saw on-screen prompt '[{key.upper()}] {action}' and pressed the key.",
+                    emotional_tag="curious",
+                ))
+
+            # Log all visible text at debug level
             all_text = data.get("all_text", "").strip()
             if all_text:
                 logger.debug(f"[Screen] Visible text: {all_text[:200]}")

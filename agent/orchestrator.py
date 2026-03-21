@@ -140,7 +140,6 @@ Survival priorities (only when below 50%):
 - Sleep low → intent: sleep (find a bed or campfire)
 - Health low + food available → intent: eat
 - Health low + no food → intent: rest or flee
-- IMPORTANT: Non-food items (seaweed, rocks, quest items) cannot be eaten or drunk. Do not attempt.
 
 Available intents: explore, gather_food, eat, drink, sleep, use_item, rest, interact,
                    investigate, open_menu, flee, trade, craft
@@ -228,6 +227,10 @@ class Orchestrator:
 
         # Screen reader state
         self._loading_screen_active: bool = False
+
+        # Action failure memory — item name → failure count this session
+        # Persisted to journal so the agent can reason about what doesn't work
+        self._item_use_failures: dict[str, int] = {}
 
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -913,7 +916,23 @@ class Orchestrator:
         action = msg.get("action", "")
         success = msg.get("success", False)
         if not success:
-            logger.warning(f"ACK {action} failed: {msg.get('reason', '?')}")
+            reason = msg.get("reason", "unknown")
+            logger.warning(f"ACK {action} failed: {reason}")
+
+            # Record item-use failures so the agent learns what doesn't work
+            if action == "use_item":
+                item = msg.get("item", "unknown")
+                self._item_use_failures[item] = self._item_use_failures.get(item, 0) + 1
+                count = self._item_use_failures[item]
+                scene = self._current_state.get("scene", "unknown")
+                self._journal.add(JournalEntry(
+                    scene=scene,
+                    event_type="action_failed",
+                    description=f"Tried to use '{item}' but it had no effect (attempt {count}). "
+                                f"Reason: {reason}. Maybe this item cannot be used this way.",
+                    emotional_tag="confused",
+                ))
+                logger.info(f"[Learn] use_item '{item}' failed {count}x — journaled")
         else:
             logger.debug(f"ACK {action} ok")
 
@@ -1050,6 +1069,12 @@ class Orchestrator:
                 f"({x*5},{z*5})" for x, z in samples
             )
 
+        # Items that have failed to use this session — the agent should reason about this
+        failure_summary = ""
+        if self._item_use_failures:
+            parts = [f"{item} ({n}x)" for item, n in self._item_use_failures.items()]
+            failure_summary = "\nItems that failed to use: " + ", ".join(parts)
+
         # Phase 9 — prior-life context: cross-game memories from other game instances
         prior_life_ctx = self._build_prior_life_context()
 
@@ -1057,7 +1082,7 @@ class Orchestrator:
 {state_summary}{nearby_summary}{interactions_summary}{inventory_summary}{skills_summary}{screen_msg_summary}
 
 Active goal: {goal.description if goal else 'none'}
-Recent journal: {recent}{blocked_summary}
+Recent journal: {recent}{blocked_summary}{failure_summary}
 Familiar locations: {[l.scene for l in familiar]}
 Personality: {personality}
 Combat experience: {combat_exp}

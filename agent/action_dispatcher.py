@@ -123,6 +123,17 @@ class ActionDispatcher:
             case "trigger_interaction":
                 await c.trigger_interaction(params.get("uid", ""))
 
+            case "take_item":
+                await c.take_item(
+                    name=params.get("item_name", params.get("name", "")),
+                )
+
+            case "open_menu":
+                await c.open_menu(params.get("menu", "inventory"))
+
+            case "close_menu":
+                await c.close_menu()
+
             case "press_key":
                 await c.press_key(params.get("key", ""))
 

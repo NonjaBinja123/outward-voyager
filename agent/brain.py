@@ -28,6 +28,10 @@ GROUNDING RULES — you must follow these absolutely:
 3. Do NOT draw on training knowledge about this game (wikis, guides, quest names, map layout).
    You only know what appears in this observation. Treat every session as a fresh start.
 4. If you have nothing useful to do, respond with a single wait action. Do not fabricate a plan.
+5. If a UID appears in STUCK INTERACTIONS, never attempt trigger_interaction with it again.
+   Use close_menu, navigate_to a scene object, or wait instead.
+6. Prefer navigate_to (using pos coordinates from SCENE OBJECTS) to move toward interesting things.
+   Then trigger_interaction or take_item once you are within range.
 """
 
 _REACTIVE_SYSTEM = """\
@@ -48,6 +52,9 @@ Action parameter schemas (use EXACTLY these, no other keys):
   stop_navigation     : {{}}
   move                : {{"direction": "forward"|"back"|"left"|"right", "duration": <seconds>}}
   trigger_interaction : {{"uid": "<uid from NEARBY OBJECTS only>"}}
+  take_item           : {{"item_name": "<item name to pick up from the ground>"}}
+  open_menu           : {{"menu": "inventory"|"map"|"character"|"skills"}}
+  close_menu          : {{}}
   press_key           : {{"key": "<single key: f, e, space, etc.>"}}
   use_item            : {{"item_name": "<name from INVENTORY>"}}
   equip_item          : {{"item_name": "<name from INVENTORY>"}}
@@ -147,7 +154,8 @@ class Brain:
     # Fallback action list when no adapter_info has been received
     _FALLBACK_ACTIONS = (
         "navigate_to, wait_for_arrival, stop_navigation, move, "
-        "look_direction, trigger_interaction, press_key, use_item, "
+        "look_direction, trigger_interaction, take_item, "
+        "open_menu, close_menu, press_key, use_item, "
         "equip_item, drop_item, say, wait, wait_for_state"
     )
 
@@ -299,8 +307,10 @@ class Observation:
             f"Scene: {s.get('scene', 'unknown')}",
         ]
         if all(k in p for k in ("pos_x", "pos_y", "pos_z")):
+            rot = p.get("rotation_y", None)
+            rot_str = f"  facing={rot:.0f}°" if rot is not None else ""
             lines.append(
-                f"Position: ({p['pos_x']:.1f}, {p['pos_y']:.1f}, {p['pos_z']:.1f})"
+                f"Position: ({p['pos_x']:.1f}, {p['pos_y']:.1f}, {p['pos_z']:.1f}){rot_str}"
             )
         lines += [
             f"Health: {self._fmt_stat(p.get('health'), p.get('max_health'))}",

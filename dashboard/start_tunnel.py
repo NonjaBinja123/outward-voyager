@@ -54,11 +54,11 @@ def main() -> None:
 
     ngrok = str(NGROK_PATH) if NGROK_PATH.exists() else "ngrok"
 
-    cmd = [ngrok, "http", str(port)]
+    cmd = [ngrok, "http", str(port), "--pooling-enabled"]
     if domain:
         cmd += ["--domain", domain]
 
-    print(f"[Tunnel] Starting ngrok → http://localhost:{port}", flush=True)
+    print(f"[Tunnel] Starting ngrok -> http://localhost:{port}", flush=True)
     if domain:
         print(f"[Tunnel] Using fixed domain: {domain}", flush=True)
 

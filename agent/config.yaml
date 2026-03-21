@@ -135,7 +135,7 @@ dashboard:
   # Generate with: python -c "import secrets; print(secrets.token_urlsafe(32))"
   auth_secret: ""
   # Set to true to expose dashboard publicly via cloudflared (requires cloudflared in PATH)
-  enable_public_sharing: true
+  enable_public_sharing: false
   # Optional: persistent Cloudflare tunnel token (from cloudflared login)
   cloudflare_tunnel_token: ""
   # Fixed hostname for token-based tunnel (e.g. "voyager.yourdomain.com")

@@ -83,8 +83,9 @@ class Orchestrator:
         # Track how many times each UID has been attempted via trigger_interaction.
         # Cleared on scene change. UIDs tried 3+ times are shown as "stuck" to the LLM.
         self._interaction_attempts: dict[str, int] = {}
-        # Track recently visited nav targets (rounded x,z) with timestamps.
-        # Prevents immediately re-navigating to a spot just arrived at.
+        # Track recently visited nav targets (snapped to 5-unit grid) with timestamps.
+        # 5-unit grid means (-177,781) and (-178,782) are the same cell — prevents
+        # the agent from retrying the same impassable area with slightly different coords.
         self._visited_nav: dict[tuple[int, int], float] = {}
         self._NAV_REVISIT_COOLDOWN = 90.0  # seconds before re-navigating to same spot
 
@@ -104,6 +105,13 @@ class Orchestrator:
         self._game.on("scan_result",    self._on_scan_result)
         self._game.on("skills",         self._on_skills)
         self._game.on("adapter_info",   self._on_adapter_info)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _nav_cell(x: float, z: float) -> tuple[int, int]:
+        """Snap coordinates to a 5-unit grid for visited-nav deduplication."""
+        return (round(x / 5) * 5, round(z / 5) * 5)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -184,6 +192,10 @@ class Orchestrator:
         # Navigation stuck check
         is_stuck, px, py, pz = self._state.check_stuck()
         if is_stuck:
+            # Blacklist both current position and the nav target (5-unit grid)
+            self._visited_nav[self._nav_cell(px, pz)] = time.time()
+            tx, tz = self._state.nav_target
+            self._visited_nav[self._nav_cell(tx, tz)] = time.time()
             self._bus.on_nav_stuck(px, py, pz)
 
     async def _on_chat(self, msg: dict) -> None:
@@ -213,15 +225,17 @@ class Orchestrator:
 
     async def _on_nav_arrived(self, msg: dict) -> None:
         self._state.set_arrived()
-        # Record this position as recently visited
+        # Record this position as recently visited (5-unit grid)
         p = self._state.player
-        key = (round(p.get("pos_x", 0)), round(p.get("pos_z", 0)))
-        self._visited_nav[key] = time.time()
+        self._visited_nav[self._nav_cell(p.get("pos_x", 0), p.get("pos_z", 0))] = time.time()
         await self._scan_scene()
         self._bus.on_nav_arrived()
 
     async def _on_nav_failed(self, msg: dict) -> None:
+        tx, tz = self._state.nav_target
         self._state.set_nav_failed()
+        # Blacklist this target — don't retry the same unreachable area (5-unit grid)
+        self._visited_nav[self._nav_cell(tx, tz)] = time.time()
         self._bus.on_nav_failed(msg.get("reason", ""))
 
     async def _on_scan_result(self, msg: dict) -> None:
@@ -294,11 +308,11 @@ class Orchestrator:
                     uid = params.get("uid", "")
                     if uid:
                         self._interaction_attempts[uid] = self._interaction_attempts.get(uid, 0) + 1
-                # Track navigate_to targets dispatched
+                # Track navigate_to targets dispatched (5-unit grid)
                 if name == "navigate_to":
-                    nx = round(float(params.get("x", 0)))
-                    nz = round(float(params.get("z", 0)))
-                    self._visited_nav[(nx, nz)] = time.time()
+                    self._visited_nav[self._nav_cell(
+                        float(params.get("x", 0)), float(params.get("z", 0))
+                    )] = time.time()
 
         # Agent self-requests strategy session
         if result.get("request_strategy"):
@@ -331,14 +345,14 @@ class Orchestrator:
         self._visited_nav = {k: v for k, v in self._visited_nav.items()
                              if now - v < self._NAV_REVISIT_COOLDOWN}
         if self._visited_nav:
-            visited_strs = [f"({x}, {z})" for (x, z) in self._visited_nav]
+            visited_strs = [f"({x}±5, {z}±5)" for (x, z) in self._visited_nav]
             extra_parts.append(
-                f"RECENTLY VISITED positions (avoid re-navigating here for ~{self._NAV_REVISIT_COOLDOWN:.0f}s): "
-                + ", ".join(visited_strs[-5:])  # show last 5
+                f"RECENTLY VISITED areas (avoid navigating within 5m for ~{self._NAV_REVISIT_COOLDOWN:.0f}s): "
+                + ", ".join(visited_strs[-8:])  # show last 8
             )
         # Active navigation
         if self._state.is_navigating:
-            tx, tz = self._state._nav_target
+            tx, tz = self._state.nav_target
             extra_parts.append(f"NAVIGATING to ({tx:.1f}, ?, {tz:.1f}) — use wait_for_arrival to block until done, or issue new navigate_to to redirect")
         # UIDs tried 3+ times with no state change — tell the LLM to stop
         stuck = [uid for uid, n in self._interaction_attempts.items() if n >= 3]
@@ -348,6 +362,7 @@ class Orchestrator:
                 + ", ".join(stuck)
             )
         extra = "\n".join(extra_parts)
+        blocked_cells = set(self._visited_nav.keys())
         return Observation(
             state=self._state.current,
             recent_journal=recent_texts,
@@ -355,6 +370,7 @@ class Orchestrator:
             pending_chat=list(self._pending_chat),
             scene_objects=self._state.nearby_objects,
             extra_context=extra,
+            blocked_nav_cells=blocked_cells,
         )
 
     # ── Scene scanning ────────────────────────────────────────────────────────

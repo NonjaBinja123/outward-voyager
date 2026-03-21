@@ -185,6 +185,8 @@ class EventBus:
             for handler in self._handlers:
                 try:
                     await handler(event)
+                except asyncio.CancelledError:
+                    raise  # don't swallow task cancellation
                 except Exception as e:
                     logger.warning(f"[EventBus] Handler error on {event.name!r}: {e}")
         finally:

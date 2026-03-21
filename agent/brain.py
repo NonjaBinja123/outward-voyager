@@ -7,6 +7,7 @@ parses the response, and returns a structured action plan.
 NO game knowledge. NO Outward-specific logic.
 The system prompt is built from adapter_info + dynamic game state only.
 """
+import asyncio
 import json
 import logging
 import re
@@ -140,13 +141,16 @@ class Brain:
         system = self._build_system(strategy=use_strategy)
         user = self._build_user(event, obs)
         task = "strategy" if use_strategy else "reactive"
-        # Ollama is free/local — no reason to cap output tokens tightly.
-        # qwen3:14b thinking (strategy) can use 8K+ tokens; give it room.
-        max_tokens = 16384 if use_strategy else 8192
+        # Strategy: 6K is plenty for thinking + goal list + action plan.
+        # Reactive: 4K is enough for a short JSON response.
+        # (qwen3:14b thinking tokens count against num_predict; keep it reasonable)
+        max_tokens = 6144 if use_strategy else 4096
 
         logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
         try:
             raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
+        except asyncio.CancelledError:
+            raise  # let task cancellation propagate normally
         except Exception as e:
             logger.warning(f"[Brain] LLM call failed: {e}")
             return None
@@ -274,6 +278,7 @@ class Observation:
         pending_chat: list[str] | None = None,
         extra_context: str = "",
         scene_objects: list[dict] | None = None,
+        blocked_nav_cells: set[tuple[int, int]] | None = None,
     ) -> None:
         self._state = state
         self.recent_journal = recent_journal or []
@@ -281,6 +286,8 @@ class Observation:
         self.pending_chat = pending_chat or []
         self.extra_context = extra_context
         self.scene_objects = scene_objects or []
+        # 5-unit grid cells that nav has failed for — suppress these from scene objects
+        self._blocked_cells: set[tuple[int, int]] = blocked_nav_cells or set()
 
     # UIDs that are Unity scene hierarchy containers or placeholder objects.
     # The mod's scan picks these up — filter them out so the LLM never sees them.
@@ -338,6 +345,7 @@ class Observation:
             i for i in raw
             if i.get("uid") != player_uid                # not self
             and i.get("uid") not in self._GARBAGE_UIDS  # not scene containers
+            and float(i.get("distance", 999)) >= 0.5    # skip player-worn equipment (< 0.5m)
         ]
         lines.append("")
         lines.append("INTERACT NOW — use trigger_interaction with these UIDs only:")
@@ -356,6 +364,13 @@ class Observation:
             # Only show objects worth navigating to (more than 8m away — already-nearby objects
             # are already in INTERACT NOW; showing them here causes pointless micro-navigation)
             far_enough = [o for o in self.scene_objects if float(o.get("distance", 999)) > 8]
+            # Filter out objects in recently-failed nav cells (pathfinding blocked those areas)
+            if self._blocked_cells:
+                far_enough = [
+                    o for o in far_enough
+                    if (round(float(o.get("x", 0)) / 5) * 5,
+                        round(float(o.get("z", 0)) / 5) * 5) not in self._blocked_cells
+                ]
             characters = [o for o in far_enough if o.get("has_character") and not o.get("is_dead")]
             non_chars = [o for o in far_enough if not o.get("has_character")]
 

@@ -63,7 +63,7 @@ class ScreenReader:
         self._seen_tips: set[str] = set()      # deduplicate within session
         self._last_read_time: float = 0.0
 
-    async def read_screen(self, min_interval: float = 8.0) -> dict[str, Any] | None:
+    async def read_screen(self, min_interval: float = 30.0) -> dict[str, Any] | None:
         """Take a screenshot and extract all visible text.
 
         Returns parsed dict or None if interval not met or screenshot failed.

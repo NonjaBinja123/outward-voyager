@@ -270,7 +270,7 @@ class Orchestrator:
         logger.info("[Screen] Scene transition — watching for loading screen tips")
         while self._loading_screen_active:
             await self._read_screen()
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(10.0)  # slow poll — loading screens are long
 
     async def _read_screen(self) -> None:
         try:

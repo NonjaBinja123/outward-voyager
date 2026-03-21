@@ -30,6 +30,22 @@ GAME CAPABILITIES: {capabilities}
 You will receive observations about the current game state and a triggering event.
 Respond with a JSON action plan using ONLY actions from AVAILABLE ACTIONS.
 
+CRITICAL — action parameter schemas (use EXACTLY these, no other keys):
+  navigate_to      : {{"x": <float>, "y": <float>, "z": <float>}}   ← world coords from game state
+  wait_for_arrival : {{}}
+  stop_navigation  : {{}}
+  move             : {{"direction": "forward"|"back"|"left"|"right", "duration": <seconds>}}
+  trigger_interaction : {{"uid": "<uid string from nearby_interactions>"}}
+  press_key        : {{"key": "<single key like f, e, space>"}}
+  use_item         : {{"item_name": "<name from inventory>"}}
+  equip_item       : {{"item_name": "<name from inventory>"}}
+  say              : {{"text": "<message to speak in chat>"}}
+  wait             : {{"seconds": <float>}}
+
+For navigate_to: ONLY use coordinates (x, y, z floats). Never use names or UIDs.
+  Coordinates come from nearby_interactions or nearby objects in the game state.
+  If you don't have coordinates, use trigger_interaction or move instead.
+
 Response format (JSON only, no markdown):
 {{
   "thinking": "<one sentence of internal reasoning>",

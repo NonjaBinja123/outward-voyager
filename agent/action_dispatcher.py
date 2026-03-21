@@ -83,10 +83,16 @@ class ActionDispatcher:
         match action:
             # ── Movement ──────────────────────────────────────────────────
             case "navigate_to":
+                # Support both flat {x,y,z} and nested {position:{x,y,z}}
+                pos = params.get("position", params)
+                if "x" not in pos or "z" not in pos:
+                    raise ValueError(
+                        f"navigate_to requires x and z coordinates, got: {params}"
+                    )
                 await c.navigate_to(
-                    float(params["x"]),
-                    float(params.get("y", 0)),
-                    float(params["z"]),
+                    float(pos["x"]),
+                    float(pos.get("y", 0)),
+                    float(pos["z"]),
                 )
 
             case "wait_for_arrival":

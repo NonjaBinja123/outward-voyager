@@ -114,14 +114,18 @@ class EventBus:
         self._enqueue(GameEvent("dashboard_chat", {"text": text}))
 
     def on_action_failed(self, action: str, reason: str = "") -> None:
-        self._enqueue(GameEvent("action_failed", {"action": action, "reason": reason}))
+        # Do NOT enqueue — action failures should NOT immediately re-trigger the LLM.
+        # The agent will recover on the next idle_timeout. This prevents runaway loops
+        # where every failed action fires a new LLM call which also fails.
+        self._last_activity = time.time()  # reset idle timer so we don't stack failures
+        logger.debug(f"[EventBus] Action failed (no LLM trigger): {action} — {reason}")
 
     def on_action_completed(self, action: str, result: dict | None = None) -> None:
-        """Called when an action sequence completes. Triggers next LLM cycle."""
-        self._enqueue(GameEvent("action_completed", {
-            "action": action,
-            "result": result or {},
-        }))
+        """Called when an action sequence completes. Resets idle timer; LLM fires on next idle_timeout."""
+        # Just reset activity — idle_timeout will drive the next think naturally.
+        # This prevents rapid-fire LLM calls after every completed micro-action.
+        self._last_activity = time.time()
+        logger.debug(f"[EventBus] Action sequence completed: {action}")
 
     def on_strategy_request(self, reason: str = "") -> None:
         """Agent self-triggers a deep strategy session."""

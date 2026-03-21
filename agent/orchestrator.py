@@ -88,6 +88,9 @@ class Orchestrator:
         # the agent from retrying the same impassable area with slightly different coords.
         self._visited_nav: dict[tuple[int, int], float] = {}
         self._NAV_REVISIT_COOLDOWN = 90.0  # seconds before re-navigating to same spot
+        # Consecutive nav failures at the same player position — triggers forced exploration
+        self._stuck_position_count: int = 0
+        self._last_stuck_cell: tuple[int, int] = (0, 0)
 
         # ── Wire together ─────────────────────────────────────────────────
         self._state.on_delta(self._bus.on_state_delta)
@@ -190,13 +193,40 @@ class Orchestrator:
         if delta.scene_changed:
             self._interaction_attempts.clear()
             self._visited_nav.clear()
+            self._stuck_position_count = 0
         # Navigation stuck check
         is_stuck, px, py, pz = self._state.check_stuck()
         if is_stuck:
-            # Blacklist both current position and the nav target (5-unit grid)
+            # Blacklist both current position and the nav target (10-unit grid)
             self._visited_nav[self._nav_cell(px, pz)] = time.time()
             tx, tz = self._state.nav_target
             self._visited_nav[self._nav_cell(tx, tz)] = time.time()
+            # Count consecutive stucks near the same player position
+            current_cell = self._nav_cell(px, pz)
+            if current_cell == self._last_stuck_cell:
+                self._stuck_position_count += 1
+            else:
+                self._stuck_position_count = 1
+                self._last_stuck_cell = current_cell
+            # After 3 consecutive stucks at the same spot, inject random exploration offset
+            # so the LLM has a concrete alternative instead of retrying blocked targets
+            if self._stuck_position_count >= 3:
+                import random
+                self._stuck_position_count = 0
+                # Pick a random direction (±30–60m) away from current position
+                angle = random.uniform(0, 360)
+                import math
+                dist = random.uniform(30, 60)
+                ex = px + math.cos(math.radians(angle)) * dist
+                ez = pz + math.sin(math.radians(angle)) * dist
+                logger.info(f"[Nav] Consecutive stuck — injecting exploration target ({ex:.0f}, {ez:.0f})")
+                # Add to goals as a temporary target so LLM picks it up
+                from memory.goals import Goal
+                from uuid import uuid4
+                self._goals.add_session_goal(Goal(
+                    id=str(uuid4()),
+                    description=f"Explore in a new direction: navigate_to ({ex:.1f}, {py:.1f}, {ez:.1f})"
+                ))
             self._bus.on_nav_stuck(px, py, pz)
 
     async def _on_chat(self, msg: dict) -> None:

@@ -154,8 +154,9 @@ class Orchestrator:
             self._bus.on_nav_stuck(px, py, pz)
 
     async def _on_chat(self, msg: dict) -> None:
-        speaker = msg.get("player_name", "")
-        text = msg.get("text", "")
+        # Mod sends: {"type": "chat", "player": uid, "message": text}
+        speaker = msg.get("player", msg.get("player_name", ""))
+        text = msg.get("message", msg.get("text", ""))
         if not text:
             return
         self._log_chat("player", text, speaker)

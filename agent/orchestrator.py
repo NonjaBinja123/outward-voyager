@@ -299,8 +299,10 @@ class Orchestrator:
     # ── Observation builder ───────────────────────────────────────────────────
 
     def _build_observation(self) -> Observation:
-        goal = self._goals.top_priority()
-        active_goals = [goal.description] if goal else []
+        active_goals = [g.description for g in
+                        (self._goals.active_session_goals() or self._goals.active_long_term_goals())[:5]]
+        if not active_goals:
+            active_goals = ["Explore the current area. Navigate to characters and objects nearby. Pick up any items you find."]
         recent_texts = self._journal.recent(5)
         extra_parts = []
         if self._recent_actions:

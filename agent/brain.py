@@ -95,7 +95,11 @@ Respond with a JSON strategy plan (JSON only, no markdown):
   "request_strategy": false
 }}
 
-Think about: what do I actually observe right now? What can I do with what I have?
+Think about:
+- What do I actually observe right now? What scene am I in?
+- Are there characters (NPCs) or items nearby I should approach?
+- What concrete goals should I set? Be specific: "navigate to NPC X at pos (x,z)" or "explore the area around my current position".
+- If I have no active goals, my priority is to navigate toward a CHARACTERS NEARBY entry, or if none, a SCENE OBJECTS entry.
 """
 
 

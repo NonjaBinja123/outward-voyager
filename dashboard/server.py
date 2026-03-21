@@ -56,7 +56,12 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
     dash_cfg = cfg.get("dashboard", {})
     if dash_cfg.get("enable_public_sharing") and _TUNNEL_AVAILABLE:
         port = dash_cfg.get("port", 7770)
-        _tunnel = _CloudflareTunnelManager(port=port, data_dir=str(DATA_DIR))
+        _tunnel = _CloudflareTunnelManager(
+            port=port,
+            data_dir=str(DATA_DIR),
+            tunnel_token=dash_cfg.get("cloudflare_tunnel_token", "") or "",
+            tunnel_hostname=dash_cfg.get("tunnel_hostname", "") or "",
+        )
         await _tunnel.start()
     yield
     if _tunnel is not None:
@@ -920,7 +925,8 @@ async function refreshDiag() {
   const img = document.getElementById('game-stream');
   const status = document.getElementById('stream-status');
   function connect() {
-    const ws = new WebSocket(`ws://${location.host}/ws/stream`);
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${wsProto}//${location.host}/ws/stream`);
     ws.binaryType = 'blob';
     status.textContent = 'connecting...';
     document.getElementById('diag-ws').textContent = 'connecting...';

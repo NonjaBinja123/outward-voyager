@@ -38,11 +38,14 @@ class TunnelStatus(Enum):
 
 
 class CloudflareTunnelManager:
-    """Manages a temporary Cloudflare Tunnel to expose the dashboard publicly.
+    """Manages a Cloudflare Tunnel to expose the dashboard publicly.
 
-    Spawns a `cloudflared` subprocess and parses its stdout to discover the
-    assigned trycloudflare.com URL. The URL is persisted to data/tunnel_url.txt
-    for the agent to reference.
+    Two modes:
+    - Temporary (default): cloudflared tunnel --url ... → random trycloudflare.com URL
+    - Named tunnel (token mode): cloudflared tunnel run --token <token> → fixed URL
+      Set tunnel_token + tunnel_hostname in config.yaml for a fixed persistent URL.
+
+    cloudflared must be installed and in PATH (or set CLOUDFLARED_PATH env var).
     """
 
     def __init__(
@@ -50,6 +53,8 @@ class CloudflareTunnelManager:
         port: int = 8080,
         data_dir: str = "./data",
         cloudflared_path: Optional[str] = None,
+        tunnel_token: Optional[str] = None,
+        tunnel_hostname: Optional[str] = None,
     ) -> None:
         self._port = port
         self._data_dir = Path(data_dir)
@@ -57,6 +62,8 @@ class CloudflareTunnelManager:
             cloudflared_path
             or os.environ.get("CLOUDFLARED_PATH", "cloudflared")
         )
+        self._tunnel_token = tunnel_token or ""
+        self._tunnel_hostname = tunnel_hostname or ""
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._public_url: Optional[str] = None
         self._status = TunnelStatus.STOPPED
@@ -96,8 +103,38 @@ class CloudflareTunnelManager:
 
         self._status = TunnelStatus.STARTING
         local_url = f"http://localhost:{self._port}"
-        cmd = [self._cloudflared_path, "tunnel", "--url", local_url]
 
+        # Token mode: named persistent tunnel with a fixed hostname
+        if self._tunnel_token:
+            cmd = [self._cloudflared_path, "tunnel", "run", "--token", self._tunnel_token]
+            logger.info("Starting named cloudflared tunnel (token mode)")
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except OSError as exc:
+                logger.error("Failed to spawn cloudflared: %s", exc)
+                self._status = TunnelStatus.FAILED
+                return False
+            # Give it a moment to connect, then mark running
+            await asyncio.sleep(3)
+            if self._proc.returncode is not None:
+                logger.error("cloudflared exited immediately (bad token?)")
+                self._status = TunnelStatus.FAILED
+                return False
+            url = self._tunnel_hostname or "(see Cloudflare dashboard)"
+            self._public_url = url
+            self._status = TunnelStatus.RUNNING
+            self._write_url_file(url)
+            asyncio.create_task(self._drain_stdout())
+            logger.info("Cloudflare named tunnel running → %s", url)
+            print(f"[Voyager] Dashboard public URL: {url}")
+            return True
+
+        # Temporary mode: random trycloudflare.com URL
+        cmd = [self._cloudflared_path, "tunnel", "--url", local_url]
         logger.info("Starting cloudflared: %s", " ".join(cmd))
         try:
             self._proc = await asyncio.create_subprocess_exec(

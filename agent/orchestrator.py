@@ -110,8 +110,9 @@ class Orchestrator:
 
     @staticmethod
     def _nav_cell(x: float, z: float) -> tuple[int, int]:
-        """Snap coordinates to a 5-unit grid for visited-nav deduplication."""
-        return (round(x / 5) * 5, round(z / 5) * 5)
+        """Snap coordinates to a 10-unit grid for visited-nav deduplication.
+        10 units = 10m cells; anything within 10m of a failed target is treated as blocked."""
+        return (round(x / 10) * 10, round(z / 10) * 10)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -345,9 +346,9 @@ class Orchestrator:
         self._visited_nav = {k: v for k, v in self._visited_nav.items()
                              if now - v < self._NAV_REVISIT_COOLDOWN}
         if self._visited_nav:
-            visited_strs = [f"({x}±5, {z}±5)" for (x, z) in self._visited_nav]
+            visited_strs = [f"({x}±10, {z}±10)" for (x, z) in self._visited_nav]
             extra_parts.append(
-                f"RECENTLY VISITED areas (avoid navigating within 5m for ~{self._NAV_REVISIT_COOLDOWN:.0f}s): "
+                f"RECENTLY VISITED AREAS (do NOT navigate within 10m of these for ~{self._NAV_REVISIT_COOLDOWN:.0f}s): "
                 + ", ".join(visited_strs[-8:])  # show last 8
             )
         # Active navigation
@@ -363,6 +364,7 @@ class Orchestrator:
             )
         extra = "\n".join(extra_parts)
         blocked_cells = set(self._visited_nav.keys())
+        stuck_uids = {uid for uid, n in self._interaction_attempts.items() if n >= 3}
         return Observation(
             state=self._state.current,
             recent_journal=recent_texts,
@@ -371,6 +373,7 @@ class Orchestrator:
             scene_objects=self._state.nearby_objects,
             extra_context=extra,
             blocked_nav_cells=blocked_cells,
+            stuck_uids=stuck_uids,
         )
 
     # ── Scene scanning ────────────────────────────────────────────────────────

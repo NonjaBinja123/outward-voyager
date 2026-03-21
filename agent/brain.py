@@ -25,15 +25,19 @@ _GROUNDING_RULES = """\
 GROUNDING RULES — you must follow these absolutely:
 1. NEARBY OBJECTS is the only source of interactable UIDs. Never invent a UID.
    If the list says "(none)", there is nothing to interact with. Do not pretend otherwise.
-2. navigate_to requires x/y/z floats from the game state. Never use a name or UID as a target.
+2. navigate_to requires x/y/z floats ONLY from CHARACTERS NEARBY or SCENE OBJECTS in this observation.
+   Never use a position you remember from a previous response — only use coordinates visible RIGHT NOW.
 3. Do NOT draw on training knowledge about this game (wikis, guides, quest names, map layout).
    You only know what appears in this observation. Treat every session as a fresh start.
 4. If you have nothing useful to do, respond with a single wait action. Do not fabricate a plan.
 5. If a UID appears in STUCK INTERACTIONS, never attempt trigger_interaction with it again.
    Use close_menu, navigate_to a scene object, or wait instead.
-6. Prefer navigate_to (using pos coordinates from SCENE OBJECTS) to move toward interesting things.
-   Then trigger_interaction or take_item once you are within range.
-7. If PENDING PLAYER MESSAGES is non-empty, consider whether the situation allows a reply.
+6. If RECENTLY VISITED AREAS is non-empty, do NOT navigate_to any coordinate in those cells.
+   Pick a target from CHARACTERS NEARBY or SCENE OBJECTS that is NOT in a visited area.
+   If ALL visible targets are blocked, use wait — do not retry blocked positions.
+7. CHARACTERS NEARBY and SCENE OBJECTS are your ONLY valid navigation targets.
+   If neither list shows targets, wait or trigger_interaction with a nearby UID.
+8. If PENDING PLAYER MESSAGES is non-empty, consider whether the situation allows a reply.
    If not in combat or immediate danger, responding with say is natural and encouraged.
 """
 
@@ -279,6 +283,7 @@ class Observation:
         extra_context: str = "",
         scene_objects: list[dict] | None = None,
         blocked_nav_cells: set[tuple[int, int]] | None = None,
+        stuck_uids: set[str] | None = None,
     ) -> None:
         self._state = state
         self.recent_journal = recent_journal or []
@@ -288,6 +293,8 @@ class Observation:
         self.scene_objects = scene_objects or []
         # 5-unit grid cells that nav has failed for — suppress these from scene objects
         self._blocked_cells: set[tuple[int, int]] = blocked_nav_cells or set()
+        # UIDs tried 3+ times with no effect — filter from INTERACT NOW entirely
+        self._stuck_uids: set[str] = stuck_uids or set()
 
     # UIDs that are Unity scene hierarchy containers or placeholder objects.
     # The mod's scan picks these up — filter them out so the LLM never sees them.
@@ -346,6 +353,7 @@ class Observation:
             if i.get("uid") != player_uid                # not self
             and i.get("uid") not in self._GARBAGE_UIDS  # not scene containers
             and float(i.get("distance", 999)) >= 0.5    # skip player-worn equipment (< 0.5m)
+            and i.get("uid") not in self._stuck_uids    # skip already-tried UIDs
         ]
         lines.append("")
         lines.append("INTERACT NOW — use trigger_interaction with these UIDs only:")
@@ -368,8 +376,8 @@ class Observation:
             if self._blocked_cells:
                 far_enough = [
                     o for o in far_enough
-                    if (round(float(o.get("x", 0)) / 5) * 5,
-                        round(float(o.get("z", 0)) / 5) * 5) not in self._blocked_cells
+                    if (round(float(o.get("x", 0)) / 10) * 10,
+                        round(float(o.get("z", 0)) / 10) * 10) not in self._blocked_cells
                 ]
             characters = [o for o in far_enough if o.get("has_character") and not o.get("is_dead")]
             non_chars = [o for o in far_enough if not o.get("has_character")]

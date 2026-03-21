@@ -132,11 +132,14 @@ class Orchestrator:
         # Delay first think by 3s so at least one game_state arrives first
         async def _delayed_start():
             await asyncio.sleep(3.0)
-            self._bus.on_strategy_request("just connected")
-        asyncio.create_task(_delayed_start())
+            if not self._loading_screen_active:  # only fire if still connected
+                self._bus.on_strategy_request("just connected")
+        self._connect_task = asyncio.create_task(_delayed_start())
 
     async def _on_disconnected(self, _msg: dict) -> None:
         self._loading_screen_active = True
+        if hasattr(self, '_connect_task') and not self._connect_task.done():
+            self._connect_task.cancel()
         asyncio.create_task(self._loading_screen_watcher())
 
     async def _on_game_state(self, msg: dict) -> None:

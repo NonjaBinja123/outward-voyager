@@ -71,6 +71,7 @@ class Orchestrator:
         self._chat_log_path = Path("./data/chat_log.jsonl")
         self._chat_log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        self._connected: bool = False
         # Pending player chat messages waiting to be included in next think()
         self._pending_chat: list[str] = []
 
@@ -124,6 +125,7 @@ class Orchestrator:
     # ── Game event handlers ───────────────────────────────────────────────────
 
     async def _on_connected(self, _msg: dict) -> None:
+        self._connected = True
         self._loading_screen_active = False
         await self._game.set_autonomous(self._autonomous)
         await self._game.read_skills()
@@ -137,6 +139,7 @@ class Orchestrator:
         self._connect_task = asyncio.create_task(_delayed_start())
 
     async def _on_disconnected(self, _msg: dict) -> None:
+        self._connected = False
         self._loading_screen_active = True
         if hasattr(self, '_connect_task') and not self._connect_task.done():
             self._connect_task.cancel()
@@ -211,6 +214,9 @@ class Orchestrator:
 
     async def _on_event(self, event: GameEvent) -> None:
         """All LLM calls flow through here."""
+        if not self._connected:
+            logger.debug(f"[Orch] Skipping event {event.name!r} — game not connected")
+            return
         obs = self._build_observation()
         result = await self._brain.think(event, obs)
         if not result:
@@ -274,9 +280,11 @@ class Orchestrator:
 
     async def _loading_screen_watcher(self) -> None:
         logger.info("[Screen] Scene transition — watching for loading screen tips")
-        while self._loading_screen_active:
+        attempts = 0
+        while self._loading_screen_active and attempts < 12:  # max ~2 min
             await self._read_screen()
-            await asyncio.sleep(10.0)  # slow poll — loading screens are long
+            await asyncio.sleep(10.0)
+            attempts += 1
 
     async def _read_screen(self) -> None:
         try:

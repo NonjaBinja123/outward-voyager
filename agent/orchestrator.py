@@ -319,10 +319,17 @@ class Orchestrator:
         if time.time() - self._last_scan_time > self._scan_interval:
             await self._scan_scene()
         obs = self._build_observation()
-        # Capture screenshot — vision model uses it for reactive decisions
-        img_bytes = await asyncio.to_thread(self._screen_reader.capture_frame)
+        # Read screen with vision model → text description → text model decides
+        # Uses frame-diff throttling so this is a no-op most of the time
+        screen_desc = None
+        if event.name not in self._brain.STRATEGY_EVENTS:
+            screen_data = await self._screen_reader.read_screen(
+                min_interval=self._timing.vision_interval
+            )
+            if screen_data:
+                screen_desc = self._format_screen_desc(screen_data)
         t0 = time.time()
-        result = await self._brain.think(event, obs, img_bytes=img_bytes)
+        result = await self._brain.think(event, obs, screen_description=screen_desc)
         self._timing.record_reactive(time.time() - t0)
         if not result:
             return
@@ -372,26 +379,16 @@ class Orchestrator:
         if result.get("request_strategy"):
             self._bus.on_strategy_request("agent-requested")
 
-        # Agent requested an immediate vision read — force a screenshot + vision parse,
-        # append the scene description to extra_context, re-think immediately (no debounce)
+        # Agent requested an immediate vision read — force screen parse, re-think with description
         if result.get("request_vision"):
             logger.info("[Orch] Agent requested vision — forcing screen read")
             vision_data = await self._screen_reader.force_read()
             if vision_data:
-                scene_desc = vision_data.get("scene_description", "")
-                menu = vision_data.get("menu_open")
-                all_text = vision_data.get("all_text", "")
-                vision_summary = f"VISION READ: {scene_desc}"
-                if menu:
-                    items = vision_data.get("menu_items", [])
-                    vision_summary += f" | Menu: {menu} — items: {items}"
-                if all_text:
-                    vision_summary += f" | Text on screen: {all_text[:300]}"
+                screen_desc2 = self._format_screen_desc(vision_data)
                 obs2 = self._build_observation()
-                obs2.extra_context = (obs2.extra_context + "\n" + vision_summary).strip()
-                img2 = await asyncio.to_thread(self._screen_reader.capture_frame)
-                result2 = await self._brain.think(event, obs2, img_bytes=img2)
-                self._timing.record_reactive(time.time() - t0)
+                t0_2 = time.time()
+                result2 = await self._brain.think(event, obs2, screen_description=screen_desc2)
+                self._timing.record_reactive(time.time() - t0_2)
                 if result2:
                     actions2 = result2.get("actions", [])
                     if actions2:
@@ -459,6 +456,25 @@ class Orchestrator:
             blocked_nav_cells=blocked_cells,
             stuck_uids=stuck_uids,
         )
+
+    @staticmethod
+    def _format_screen_desc(data: dict) -> str:
+        """Turn a vision read result into a concise text string for the LLM prompt."""
+        parts = []
+        scene = data.get("scene_description", "")
+        if scene:
+            parts.append(scene)
+        menu = data.get("menu_open")
+        if menu:
+            items = data.get("menu_items", [])
+            item_str = f" — items: {items[:8]}" if items else ""
+            parts.append(f"Menu open: {menu}{item_str}")
+        if data.get("action_required") and data.get("required_key"):
+            parts.append(f"Requires key press: {data['required_key']!r}")
+        all_text = data.get("all_text", "")
+        if all_text:
+            parts.append(f"Visible text: {all_text[:200]}")
+        return " | ".join(parts)
 
     # ── Scene scanning ────────────────────────────────────────────────────────
 

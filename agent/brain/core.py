@@ -48,36 +48,30 @@ class Brain:
         self,
         event: GameEvent,
         obs: Observation,
-        img_bytes: bytes | None = None,
+        screen_description: str | None = None,
     ) -> dict[str, Any] | None:
         """
         Given a triggering event and observation bundle, call the LLM and return
         a parsed action plan dict, or None on failure.
 
-        img_bytes: screenshot of the game window. When provided, reactive calls use
-                   complete_vision() so the vision model sees what the player sees.
-                   Strategy calls always use text-only complete() (deep reflection).
+        screen_description: text summary produced by the vision model reading the
+                            current screenshot. Injected into the user prompt so
+                            the text decision model knows what's on screen.
+                            Always uses complete() — vision model only reads,
+                            text model decides.
         """
         use_strategy = event.name in self.STRATEGY_EVENTS
         system = build_system(self._registry, strategy=use_strategy)
-        user = self._build_user(event, obs)
+        user = self._build_user(event, obs, screen_description=screen_description)
         task = "strategy" if use_strategy else "reactive"
-        # Strategy: 6K is plenty for thinking + goal list + action plan.
-        # Reactive: 4K is enough for a short JSON response.
         max_tokens = 6144 if use_strategy else 4096
 
-        logger.info(f"[Brain] Think — event={event.name!r} tier={task} vision={'yes' if img_bytes and not use_strategy else 'no'}")
+        logger.info(
+            f"[Brain] Think — event={event.name!r} tier={task} "
+            f"screen={'yes' if screen_description else 'no'}"
+        )
         try:
-            if img_bytes and not use_strategy:
-                raw = await self._llm.complete_vision(
-                    system=system,
-                    user=user,
-                    img_bytes=img_bytes,
-                    task=task,
-                    max_tokens=max_tokens,
-                )
-            else:
-                raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
+            raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -88,7 +82,7 @@ class Brain:
 
     # ── User prompt builder ───────────────────────────────────────────────────
 
-    def _build_user(self, event: GameEvent, obs: Observation) -> str:
+    def _build_user(self, event: GameEvent, obs: Observation, screen_description: str | None = None) -> str:
         """
         Build the user-turn message: event type + full game state observation.
         This is what changes every LLM call; the system prompt stays constant.
@@ -106,6 +100,10 @@ class Brain:
                 "If you are not in combat or actively navigating, include a say action "
                 "to reply naturally. If busy, prioritize the game action."
             )
+
+        if screen_description:
+            lines.append("")
+            lines.append(f"CURRENT SCREEN: {screen_description}")
 
         lines.append("")
         lines.append("GAME STATE:")

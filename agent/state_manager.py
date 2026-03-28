@@ -7,6 +7,7 @@ and surfaces meaningful deltas. No game-specific logic — pure observation.
 import logging
 import math
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -62,6 +63,7 @@ class StateManager:
         self._nav_check_interval: float = 5.0
         self._nav_stuck_count: int = 0
         self._blocked: set[tuple[int, int]] = set()
+        self._blocked_order: deque[tuple[int, int]] = deque(maxlen=50)  # evicts oldest first
 
         # Debounce for screen-triggered key presses
         self._last_key_press_time: float = 0.0
@@ -273,6 +275,10 @@ class StateManager:
 
     def _mark_blocked(self, x: float, z: float) -> None:
         cell = (int(x) // 5, int(z) // 5)
-        self._blocked.add(cell)
-        if len(self._blocked) > 50:
-            self._blocked.pop()
+        if cell not in self._blocked:
+            if len(self._blocked_order) == self._blocked_order.maxlen:
+                # deque is full — evict the oldest cell from the set
+                evicted = self._blocked_order[0]  # leftmost = oldest
+                self._blocked.discard(evicted)
+            self._blocked_order.append(cell)
+            self._blocked.add(cell)

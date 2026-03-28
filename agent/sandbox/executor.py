@@ -76,6 +76,12 @@ class SkillContext:
         """Start pathfinding navigation to world coordinates."""
         await self._client.navigate_to(x, y, z)
 
+    async def move(self, direction: str = "forward", duration: float = 1.0) -> None:
+        """Walk in a direction for a number of seconds.
+        direction: "forward" | "back" | "left" | "right"
+        """
+        await self._client.move(direction, duration)
+
     async def trigger_interaction(self, uid: str) -> None:
         """Trigger interaction with a nearby object by its UID."""
         await self._client.trigger_interaction(uid)
@@ -83,6 +89,11 @@ class SkillContext:
     async def say(self, text: str) -> None:
         """Send a message in in-game chat."""
         await self._client.say(text)
+
+    @property
+    def nearby_objects(self) -> list[dict]:
+        """Objects returned by the last scan_nearby — use for navigation targets."""
+        return self._state.nearby_objects
 
 
 @dataclass

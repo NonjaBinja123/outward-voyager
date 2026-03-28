@@ -115,6 +115,9 @@ public class ActionExecutor
                 PressKey(0x1B); // Escape
                 _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "close_menu", success = true });
                 break;
+            case "game_action":
+                GameAction(cmd.Params);
+                break;
             case "press_key":
                 PressNamedKey(cmd.Params);
                 break;
@@ -772,6 +775,32 @@ public class ActionExecutor
         System.Threading.Thread.Sleep(50);
         keybd_event(vk, 0, KEYEVENTF_KEYUP, IntPtr.Zero);
         Plugin.Log.LogInfo($"[Key] Pressed VK 0x{vk:X2}");
+    }
+
+    /// <summary>
+    /// Assert a named game input via InputInjector (no Windows key injection).
+    /// params: { "name": string, "mode": "pulse"|"hold"|"release" }
+    ///
+    /// Combat:  attack, attack2, attack_hold, block, dodge, sprint, sheathe, stealth, lock_target
+    /// Slots:   quickslot_1 .. quickslot_8
+    /// Menu:    menu_up, menu_down, menu_left, menu_right, menu_confirm, menu_cancel
+    /// Toggle:  toggle_inventory, toggle_equipment, toggle_map, toggle_skills,
+    ///          toggle_status, toggle_crafting, go_next_menu, go_prev_menu
+    /// </summary>
+    private void GameAction(Dictionary<string, object?> p)
+    {
+        string name = GetString(p, "name").ToLowerInvariant();
+        string mode = GetString(p, "mode", "pulse").ToLowerInvariant();
+
+        switch (mode)
+        {
+            case "hold":    InputInjector.HoldAction(name);    break;
+            case "release": InputInjector.ReleaseAction(name); break;
+            default:        InputInjector.PulseAction(name);   break;
+        }
+
+        Plugin.Log.LogInfo($"[GameAction] {name} ({mode})");
+        _ = Plugin.WsServer!.SendAsync(new { type = "ack", action = "game_action", success = true, name, mode });
     }
 
     /// <summary>

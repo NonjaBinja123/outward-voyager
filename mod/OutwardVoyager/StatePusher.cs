@@ -21,6 +21,9 @@ public class StatePusher : MonoBehaviour
             catch (Exception ex) { Plugin.Log.LogWarning($"[MainThread] Action failed: {ex.Message}"); }
         }
 
+        // Clear one-frame pulsed actions at end of each Update so they don't carry over
+        InputInjector.ClearPulsed();
+
         if (Time.time < _nextPush) return;
         _nextPush = Time.time + PushInterval;
 

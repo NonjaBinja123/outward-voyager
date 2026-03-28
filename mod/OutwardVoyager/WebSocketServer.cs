@@ -94,6 +94,7 @@ public class WebSocketServer
             InputInjector.InjectedHorizontal = 0f;
             InputInjector.InjectedCameraH = 0f;
             InputInjector.InjectedCameraV = 0f;
+            InputInjector.ClearAll();  // clear any held/pulsed combat or menu actions
             Plugin.NavController?.Cancel();
             Plugin.Log.LogInfo("[Agent] Disconnected — all autonomous state cleared.");
         });

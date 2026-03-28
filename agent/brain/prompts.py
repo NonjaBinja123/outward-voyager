@@ -42,11 +42,18 @@ Action parameter schemas (use EXACTLY these, no other keys):
   take_item           : {"item_name": "<item name to pick up from the ground>"}
   open_menu           : {"menu": "inventory"|"map"|"character"|"skills"}
   close_menu          : {}
-  press_key           : {"key": "<single key: f, e, space, etc.>"}
+  game_action         : {"name": "<action>", "mode": "pulse"|"hold"|"release"}
   use_item            : {"item_name": "<name from INVENTORY>"}
   equip_item          : {"item_name": "<name from INVENTORY>"}
   say                 : {"text": "<message>"}
   wait                : {"seconds": <float>}
+
+game_action names — combat: attack, attack2, block, dodge, sprint, sheathe, stealth, lock_target
+game_action names — slots:  quickslot_1 .. quickslot_8
+game_action names — menus:  menu_up, menu_down, menu_left, menu_right, menu_confirm, menu_cancel
+game_action names — toggle: toggle_inventory, toggle_equipment, toggle_map, toggle_skills,
+                             toggle_status, toggle_crafting, go_next_menu, go_prev_menu
+Hold/release pattern: game_action block hold → ... → game_action block release
 """
 
 # ── Response format ───────────────────────────────────────────────────────────

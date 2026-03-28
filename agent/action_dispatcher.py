@@ -151,6 +151,12 @@ class ActionDispatcher:
             case "close_menu":
                 await c.close_menu()
 
+            case "game_action":
+                await c.game_action(
+                    name=params.get("name", ""),
+                    mode=params.get("mode", "pulse"),
+                )
+
             case "press_key":
                 await c.press_key(params.get("key", ""))
 

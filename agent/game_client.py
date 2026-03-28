@@ -127,3 +127,9 @@ class GameClient:
 
     async def press_key(self, key: str) -> None:
         await self.send("press_key", {"key": key})
+
+    async def game_action(self, name: str, mode: str = "pulse") -> None:
+        """Assert a named game input via InputInjector (no Windows key injection).
+        mode: 'pulse' (one frame), 'hold' (until release), 'release' (stop holding)
+        """
+        await self.send("game_action", {"name": name, "mode": mode})

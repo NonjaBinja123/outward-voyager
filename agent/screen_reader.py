@@ -38,38 +38,27 @@ CAPTURE_WIDTH  = 1280
 CAPTURE_HEIGHT = 720
 
 _SCREEN_PROMPT = """\
-You are reading a screenshot of a video game. Read ALL visible content carefully.
-
-Report what you see:
-1. Current game state — where is the character, what is happening on screen?
-2. Any menus open — inventory, map, character screen, dialogue, etc. List all visible items/options.
-3. Interaction prompts — "[F] Pick Up", "Press E to Interact", any on-screen button hints
-4. HUD information — health bars, stamina, status icons, any values visible
-5. Loading screen tips — text on dark background during loads
-6. Death/respawn screens — "You Died", defeat messages, respawn options
-7. Transition prompts — "Press Space to Continue", "Press any key"
-8. Any other text, dialogue subtitles, or notifications
-
-Respond with ONLY valid JSON (no markdown fences):
+You are reading a screenshot of a video game. Be concise. Respond with ONLY valid JSON (no markdown):
 {
-  "scene_description": "brief description of what is visible on screen",
+  "scene_description": "one sentence: where is the character and what is happening",
   "is_loading_screen": false,
   "is_death_screen": false,
   "menu_open": null,
   "menu_items": [],
   "action_required": false,
   "required_key": "",
-  "interaction_hints": [{"key": "f", "action": "pick_up"}],
+  "interaction_hints": [],
   "tips": [],
-  "notifications": [],
-  "all_text": "full verbatim transcript of all visible text"
+  "notifications": []
 }
 
-menu_open: null if no menu, or one of: "inventory", "equipment", "map", "skills",
-           "character", "crafting", "quest", "dialogue", "settings", "other"
-menu_items: list of visible menu entries/options (for inventory: item names; for dialogue: options)
-action_required: true when a full-screen overlay requires a key press to continue
-required_key: the key to press (lowercase: "space", "e", "f", "tab", etc.)
+menu_open: null if no menu, or one of: "inventory","equipment","map","skills","character","crafting","dialogue","other"
+menu_items: up to 10 visible menu entries (item names, dialogue options, etc.)
+interaction_hints: [{\"key\": \"f\", \"action\": \"pick_up\"}] for any on-screen button prompts
+action_required: true only when a full-screen overlay is blocking gameplay and needs a key press
+required_key: the key to press ("space", "e", "f", "tab", etc.)
+tips: any loading screen tip text (1-2 sentences max each)
+notifications: any pop-up notifications or status messages visible
 """
 
 
@@ -215,10 +204,11 @@ class ScreenReader:
         try:
             import json, re
             raw = await self._llm.complete_vision(
-                system="You read game screenshots and report everything visible.",
+                system="You read game screenshots and report what is visible. Be concise.",
                 user=_SCREEN_PROMPT,
                 img_bytes=img_bytes,
                 task="vision",
+                max_tokens=512,
             )
             raw = raw.strip()
             raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw, flags=re.MULTILINE).strip()

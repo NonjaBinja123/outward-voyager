@@ -27,7 +27,9 @@ MIN_IDLE_S         = 3.0
 MIN_COMBAT_IDLE_S  = 1.5
 MIN_VISION_S       = 5.0
 
-# Hard upper bounds — if model is this slow, use fallback strategy
+# Hard upper bounds — cap regardless of measured speed so slow models don't paralyse the agent
+MAX_IDLE_S         = 15.0   # never wait more than 15s between decisions
+MAX_COMBAT_IDLE_S  = 6.0    # never wait more than 6s in combat
 MAX_VISION_S       = 20.0   # above this: skip vision, use engine-only
 
 
@@ -50,12 +52,12 @@ class LLMTiming:
     @property
     def idle_timeout(self) -> float:
         """Seconds between LLM calls during normal gameplay."""
-        return max(self._reactive_ms / 1000 * 1.5, MIN_IDLE_S)
+        return min(max(self._reactive_ms / 1000 * 1.5, MIN_IDLE_S), MAX_IDLE_S)
 
     @property
     def combat_idle_timeout(self) -> float:
         """Seconds between LLM calls during combat (urgent mode)."""
-        return max(self._reactive_ms / 1000 * 1.1, MIN_COMBAT_IDLE_S)
+        return min(max(self._reactive_ms / 1000 * 1.1, MIN_COMBAT_IDLE_S), MAX_COMBAT_IDLE_S)
 
     @property
     def vision_interval(self) -> float:

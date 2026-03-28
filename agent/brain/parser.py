@@ -93,10 +93,30 @@ def _scan_for_json(text: str) -> dict | None:
 
 
 def _validate(data: dict) -> dict[str, Any] | None:
-    """Check that the parsed dict has required keys with correct types."""
+    """Check that the parsed dict has required keys with correct types.
+
+    Also recovers the common qwen3 mistake of returning a flat action object
+    instead of an actions array:
+      {"action": "wait", "params": {...}}  →  {"actions": [{"action": "wait", ...}]}
+    """
     actions = data.get("actions")
+
+    # Auto-recover flat {"action": ..., "params": ...} — qwen3:4b does this constantly
+    if not isinstance(actions, list) and "action" in data:
+        action_name = data.get("action", "")
+        params = data.get("params", {})
+        # Reject if it looks like a copied example from the prompt (contains angle brackets)
+        if action_name and "<" not in str(action_name) and "<" not in str(params):
+            logger.debug(f"[Parser] Auto-wrapping flat action: {action_name!r}")
+            data = dict(data)
+            data["actions"] = [{"action": action_name, "params": params}]
+            data.pop("action", None)
+            data.pop("params", None)
+            actions = data["actions"]
+
     if not isinstance(actions, list):
         logger.warning(f"[Parser] No 'actions' list in response: {data}")
         return None
+
     logger.debug(f"[Parser] Plan: {data.get('thinking', '')[:80]}")
     return data

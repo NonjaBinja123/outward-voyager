@@ -471,9 +471,9 @@ class Orchestrator:
             parts.append(f"Menu open: {menu}{item_str}")
         if data.get("action_required") and data.get("required_key"):
             parts.append(f"Requires key press: {data['required_key']!r}")
-        all_text = data.get("all_text", "")
-        if all_text:
-            parts.append(f"Visible text: {all_text[:200]}")
+        notes = data.get("notifications", [])
+        if notes:
+            parts.append(f"Notifications: {notes[:3]}")
         return " | ".join(parts)
 
     # ── Scene scanning ────────────────────────────────────────────────────────
@@ -542,11 +542,10 @@ class Orchestrator:
                 if not data:
                     continue
 
-                all_text = data.get("all_text", "")
                 logger.info(f"[Screen] Read — action_required={data.get('action_required')} "
                             f"is_death={data.get('is_death_screen')} "
                             f"key={data.get('required_key')!r} "
-                            f"text={all_text[:80]!r}")
+                            f"scene={data.get('scene_description','')[:60]!r}")
 
                 # Store loading tips
                 for tip in self._screen_reader.new_tips(data):

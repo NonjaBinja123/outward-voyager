@@ -1,14 +1,26 @@
-import random
-from typing import Dict, Any
+"""
+heal_self — use the best available healing item from the pouch.
+Checks for bandages first, then potions, then any food with restorative value.
+Rewite me if you learn better item names.
+"""
 
-def run_heal(state: Dict[str, Any]) -> Dict[str, Any]:
-    if state['health'] == 100:
-        return {'action': 'heal', 'params': {}}
-    action_params = {
-        'action': 'heal',
-        'location': random.choice(['familiar_location1', 'familiar_location2']),
-        'amount': random.randint(10, 20),
-        'stamina': state['stamina'] * 0.8,
-        'rest_time': 60 if random.random() < 0.7 else 120
-    }
-    return action_params
+
+async def run(ctx) -> None:
+    """Use the first healing item found in the pouch."""
+    pouch = ctx.state.get("inventory", {}).get("pouch", [])
+    heal_keywords = (
+        "bandage", "health potion", "healing potion", "poultice",
+        "antidote", "tonic", "salve", "mend",
+    )
+    for item in pouch:
+        name = item.get("name", "").lower()
+        if any(kw in name for kw in heal_keywords):
+            await ctx.use_item(item["name"])
+            return
+    # Fallback: any food item (restores some health/food stat)
+    food_keywords = ("jerky", "ration", "berry", "mushroom", "bread", "meat")
+    for item in pouch:
+        name = item.get("name", "").lower()
+        if any(kw in name for kw in food_keywords):
+            await ctx.use_item(item["name"])
+            return

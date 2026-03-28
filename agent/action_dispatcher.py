@@ -29,9 +29,10 @@ class ActionDispatcher:
     can fire action_completed / action_failed events without circular imports.
     """
 
-    def __init__(self, game_client: Any, state_manager: Any) -> None:
+    def __init__(self, game_client: Any, state_manager: Any, executor: Any = None) -> None:
         self._client = game_client
         self._state = state_manager
+        self._executor = executor  # SandboxExecutor — optional, enables skill actions
         self._on_completed: list[CompletionCallback] = []
         self._on_failed: list[CompletionCallback] = []
         self._current_task: asyncio.Task | None = None
@@ -187,6 +188,18 @@ class ActionDispatcher:
                     timeout=float(params.get("timeout", 30.0)),
                 )
 
+            # ── Skills ────────────────────────────────────────────────────
+            case "execute_skill":
+                await self._run_skill(params.get("name", ""))
+
+            case "write_skill" | "rewrite_skill":
+                await self._write_skill(
+                    name=params.get("name", ""),
+                    code=params.get("code", ""),
+                    description=params.get("description", ""),
+                    is_rewrite=(action == "rewrite_skill"),
+                )
+
             # ── Unknown ───────────────────────────────────────────────────
             case _:
                 logger.warning(f"[Dispatcher] Unknown action: {action!r}")
@@ -214,6 +227,34 @@ class ActionDispatcher:
             if current_val == value:
                 return
         logger.warning(f"[Dispatcher] wait_for_state timed out: {key}={value}")
+
+    async def _run_skill(self, name: str) -> None:
+        """Execute a sandboxed skill by name using the async executor."""
+        if not self._executor:
+            raise ValueError("execute_skill requires a SandboxExecutor — not configured")
+        if not name:
+            raise ValueError("execute_skill: 'name' param is required")
+        from sandbox.executor import SkillContext
+        ctx = SkillContext(game_client=self._client, state_manager=self._state)
+        result = await self._executor.execute_async(name, "run", ctx)
+        if not result.ok:
+            raise RuntimeError(f"Skill '{name}' failed: {result.error}")
+        logger.info(f"[Dispatcher] Skill '{name}' completed in {result.duration_ms:.0f}ms")
+
+    async def _write_skill(self, name: str, code: str, description: str, is_rewrite: bool) -> None:
+        """Validate and integrate agent-written skill code."""
+        if not self._executor:
+            raise ValueError("write_skill requires a SandboxExecutor — not configured")
+        if not name or not code:
+            raise ValueError("write_skill: 'name' and 'code' params are required")
+        verb = "Rewriting" if is_rewrite else "Writing"
+        logger.info(f"[Dispatcher] {verb} skill '{name}'")
+        result = self._executor.propose(name, code, description)
+        if not result.ok:
+            raise RuntimeError(
+                f"Skill '{name}' failed validation ({result.stage}): {result.reason}"
+            )
+        logger.info(f"[Dispatcher] Skill '{name}' integrated successfully")
 
     async def _notify(
         self, callbacks: list[CompletionCallback], action: str, result: dict | None

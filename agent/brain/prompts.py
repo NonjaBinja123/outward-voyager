@@ -47,6 +47,11 @@ Action parameter schemas (use EXACTLY these, no other keys):
   equip_item          : {"item_name": "<name from INVENTORY>"}
   say                 : {"text": "<message>"}
   wait                : {"seconds": <float>}
+  execute_skill       : {"name": "<skill name from SKILLS AVAILABLE>"}
+  write_skill         : {"name": "<snake_case_name>", "description": "<what it does>",
+                          "code": "async def run(ctx):\n    await ctx.game_action('attack')\n    await ctx.wait(0.3)"}
+  rewrite_skill       : {"name": "<existing skill name>", "description": "<updated purpose>",
+                          "code": "async def run(ctx):\n    # improved version\n    ..."}
 
 game_action names — combat: attack, attack2, block, dodge, sprint, sheathe, stealth, lock_target
 game_action names — slots:  quickslot_1 .. quickslot_8
@@ -54,6 +59,12 @@ game_action names — menus:  menu_up, menu_down, menu_left, menu_right, menu_co
 game_action names — toggle: toggle_inventory, toggle_equipment, toggle_map, toggle_skills,
                              toggle_status, toggle_crafting, go_next_menu, go_prev_menu
 Hold/release pattern: game_action block hold → ... → game_action block release
+
+Skill ctx methods: ctx.game_action(name, mode) | ctx.wait(seconds) | ctx.use_item(name)
+                   ctx.navigate_to(x,y,z) | ctx.trigger_interaction(uid) | ctx.say(text)
+                   ctx.state → full game state dict | ctx.player → player sub-dict
+Skills run at game speed (50-100ms timing). Use for fast action sequences (combat combos,
+menu browsing). write_skill when you need a new sequence. rewrite_skill to improve one.
 """
 
 # ── Response format ───────────────────────────────────────────────────────────

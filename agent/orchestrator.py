@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from action_dispatcher import ActionDispatcher
 from brain import Brain, Observation
+from sandbox.executor import SandboxExecutor
 from event_bus import EventBus, GameEvent
 from game_client import GameClient
 from keybinding_learner import KeybindingLearner
@@ -57,7 +58,11 @@ class Orchestrator:
         self._state = StateManager()
         self._bus = EventBus()
         self._brain = Brain(self._llm, self._registry)
-        self._dispatcher = ActionDispatcher(self._game, self._state)
+        self._executor = SandboxExecutor()
+        discovered = self._executor.discover()
+        if discovered:
+            logger.info(f"[Skills] Discovered {len(discovered)} seed skills: {discovered}")
+        self._dispatcher = ActionDispatcher(self._game, self._state, self._executor)
 
         # ── Timing ────────────────────────────────────────────────────────
         self._timing = LLMTiming()
@@ -437,6 +442,10 @@ class Orchestrator:
                 "STUCK INTERACTIONS (tried 3+ times, NO effect — do NOT attempt these again): "
                 + ", ".join(stuck)
             )
+        # Skill performance summary — LLM sees what skills it has and how they're doing
+        skill_perf = self._executor.performance_summary()
+        if skill_perf:
+            extra_parts.append(f"SKILLS AVAILABLE: {skill_perf}")
         extra = "\n".join(extra_parts)
         blocked_cells = set(self._visited_nav.keys())
         stuck_uids = {uid for uid, n in self._interaction_attempts.items() if n >= 3}

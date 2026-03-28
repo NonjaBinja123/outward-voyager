@@ -8,12 +8,18 @@ The agent proposes new Python functions. This module:
   4. Records success/failure, prunes on repeated failure
 
 All integrated code lives under agent/sandbox/skills/ and is
-importable as sandbox.skills.<name>. The agent can call functions
-from this namespace via execute().
+importable as sandbox.skills.<name>. The agent can call async functions
+from this namespace via execute_async(name, "run", ctx).
+
+Skill format:
+    async def run(ctx: SkillContext) -> None:
+        await ctx.game_action("attack")
+        await ctx.wait(0.3)
 
 Self-modification log is appended to data/self_modifications.jsonl
 so every change is observable for research.
 """
+import asyncio
 import importlib.util
 import json
 import logging
@@ -29,6 +35,54 @@ logger = logging.getLogger(__name__)
 
 _SKILLS_DIR = Path(__file__).parent / "skills"
 _MOD_LOG = Path("./data/self_modifications.jsonl")
+
+
+class SkillContext:
+    """
+    Passed to every skill's run(ctx) function.
+    Provides game interaction primitives — the only interface a skill needs.
+
+    Skills MUST NOT import game modules or call anything outside ctx.
+    The validator enforces banned imports; ctx provides everything safe.
+    """
+
+    def __init__(self, game_client: Any, state_manager: Any) -> None:
+        self._client = game_client
+        self._state = state_manager
+
+    @property
+    def state(self) -> dict[str, Any]:
+        """Current full game state snapshot."""
+        return self._state.current
+
+    @property
+    def player(self) -> dict[str, Any]:
+        """Shortcut to player sub-dict."""
+        return self._state.player
+
+    async def game_action(self, name: str, mode: str = "pulse") -> None:
+        """Send a game input. mode: pulse (one frame) | hold | release."""
+        await self._client.game_action(name, mode)
+
+    async def wait(self, seconds: float) -> None:
+        """Pause execution without blocking the event loop."""
+        await asyncio.sleep(seconds)
+
+    async def use_item(self, item_name: str) -> None:
+        """Use an item from inventory by name."""
+        await self._client.use_item(item_name)
+
+    async def navigate_to(self, x: float, y: float, z: float) -> None:
+        """Start pathfinding navigation to world coordinates."""
+        await self._client.navigate_to(x, y, z)
+
+    async def trigger_interaction(self, uid: str) -> None:
+        """Trigger interaction with a nearby object by its UID."""
+        await self._client.trigger_interaction(uid)
+
+    async def say(self, text: str) -> None:
+        """Send a message in in-game chat."""
+        await self._client.say(text)
 
 
 @dataclass
@@ -95,6 +149,71 @@ class SandboxExecutor:
         self._records[name] = record
         self._log_modification(record, code, description)
         return result
+
+    async def execute_async(self, name: str, fn_name: str, *args: Any, **kwargs: Any) -> ExecutionResult:
+        """
+        Await fn_name from the integrated skill module named 'name'.
+        Use this for async skill functions (the standard format).
+        """
+        mod = self._get_module(name)
+        if mod is None:
+            return ExecutionResult(ok=False, error=f"Module '{name}' not integrated")
+
+        fn = getattr(mod, fn_name, None)
+        if fn is None:
+            return ExecutionResult(ok=False, error=f"Function '{fn_name}' not found in '{name}'")
+
+        t0 = time.perf_counter()
+        try:
+            rv = await fn(*args, **kwargs)
+            elapsed = (time.perf_counter() - t0) * 1000
+            if name in self._records:
+                self._records[name].times_called += 1
+                self._records[name].times_succeeded += 1
+            return ExecutionResult(ok=True, return_value=rv, duration_ms=elapsed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            elapsed = (time.perf_counter() - t0) * 1000
+            if name in self._records:
+                self._records[name].times_called += 1
+            logger.warning(f"[Sandbox] {name}.{fn_name} raised: {e}")
+            return ExecutionResult(ok=False, error=str(e), duration_ms=elapsed)
+
+    def discover(self) -> list[str]:
+        """
+        Scan the skills directory and register any .py files not yet tracked.
+        Used on startup to pick up hand-written seed skills without running validation.
+        """
+        found = []
+        for path in sorted(_SKILLS_DIR.glob("*.py")):
+            name = path.stem
+            if name == "__init__" or name in self._records:
+                continue
+            self._records[name] = IntegrationRecord(
+                name=name,
+                timestamp=path.stat().st_mtime,
+                validation_stage="builtin",
+                integrated=True,
+                reason="discovered from file",
+            )
+            self._load_module(name)
+            found.append(name)
+            logger.info(f"[Sandbox] Discovered skill: {name!r}")
+        return found
+
+    def performance_summary(self) -> str:
+        """One-line summary of all skill outcomes for LLM context injection."""
+        parts = []
+        for rec in self._records.values():
+            if not rec.integrated:
+                continue
+            if rec.times_called == 0:
+                parts.append(f"{rec.name}(unused)")
+            else:
+                rate = rec.times_succeeded / rec.times_called
+                parts.append(f"{rec.name}({rec.times_called}x, {rate:.0%}ok)")
+        return ", ".join(parts) if parts else "none"
 
     def execute(self, name: str, fn_name: str, *args: Any, **kwargs: Any) -> ExecutionResult:
         """

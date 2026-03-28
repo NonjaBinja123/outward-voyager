@@ -25,6 +25,7 @@ class GameClient:
 
     async def connect(self) -> None:
         while True:
+            disconnect_reason: str = "connection closed"
             try:
                 self._ws = await websockets.connect(
                     self._uri,
@@ -37,16 +38,20 @@ class GameClient:
                 for handler in self._handlers.get("connected", []):
                     await handler({})
                 await self._receive_loop()
+                # _receive_loop() returned normally — websockets 14+ closes cleanly
+                # without raising an exception. Still need to reconnect.
             except Exception as e:
-                self._connected.clear()
-                self._ws = None  # prevent stale sends while reconnecting
-                logger.warning(f"Game connection lost: {e}. Retrying in 5s...")
-                for handler in self._handlers.get("disconnected", []):
-                    try:
-                        await handler({})
-                    except Exception:
-                        pass
-                await asyncio.sleep(5)
+                disconnect_reason = str(e)
+            # Always clean up and notify disconnected handlers before retrying
+            self._connected.clear()
+            self._ws = None  # prevent stale sends while reconnecting
+            logger.warning(f"Game connection lost: {disconnect_reason}. Retrying in 5s...")
+            for handler in self._handlers.get("disconnected", []):
+                try:
+                    await handler({})
+                except Exception:
+                    pass
+            await asyncio.sleep(5)
 
     async def _receive_loop(self) -> None:
         assert self._ws is not None

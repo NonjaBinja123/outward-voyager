@@ -23,6 +23,7 @@ namespace OutwardVoyager;
 /// </summary>
 public static class InputInjector
 {
+    public static bool IsConnected   { get; set; } = false;  // true only while agent is connected
     public static bool IsNavigating  { get; set; } = false;
     public static bool IsAutonomous  { get; set; } = false;
     public static int  PlayerNum     { get; set; } = 0;
@@ -61,7 +62,7 @@ public static class InputInjector
     [HarmonyPostfix]
     private static void MoveVertical_Postfix(int _playerID, ref float __result)
     {
-        if (IsNavigating && _playerID == PlayerNum)
+        if (IsConnected && IsNavigating && _playerID == PlayerNum)
             __result = InjectedVertical;
     }
 
@@ -69,7 +70,7 @@ public static class InputInjector
     [HarmonyPostfix]
     private static void MoveHorizontal_Postfix(int _playerID, ref float __result)
     {
-        if (IsNavigating && _playerID == PlayerNum)
+        if (IsConnected && IsNavigating && _playerID == PlayerNum)
             __result = InjectedHorizontal;
     }
 
@@ -81,7 +82,7 @@ public static class InputInjector
     [HarmonyPostfix]
     private static void RotateCameraH_Postfix(int _playerID, ref float __result)
     {
-        if (IsAutonomous && _playerID == PlayerNum)
+        if (IsConnected && IsAutonomous && _playerID == PlayerNum)
             __result += InjectedCameraH;
     }
 
@@ -89,7 +90,7 @@ public static class InputInjector
     [HarmonyPostfix]
     private static void RotateCameraV_Postfix(int _playerID, ref float __result)
     {
-        if (IsAutonomous && _playerID == PlayerNum)
+        if (IsConnected && IsAutonomous && _playerID == PlayerNum)
             __result += InjectedCameraV;
     }
 }

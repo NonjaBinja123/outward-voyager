@@ -41,6 +41,7 @@ public class WebSocketServer
                     var wsCtx = await ctx.AcceptWebSocketAsync(null).ConfigureAwait(false);
                     _client = wsCtx.WebSocket;
                     Plugin.Log.LogInfo("Python agent connected.");
+                    InputInjector.IsConnected = true;
                     _ = ReceiveLoopAsync(_client, _cts.Token);
                 }
                 else
@@ -82,6 +83,20 @@ public class WebSocketServer
                 break;
             }
         }
+        // Agent disconnected — hand control back to the player immediately
+        InputInjector.IsConnected = false;
+        while (Plugin.MainThreadQueue.TryDequeue(out _)) { } // discard queued commands
+        Plugin.MainThreadQueue.Enqueue(() =>
+        {
+            InputInjector.IsAutonomous = false;
+            InputInjector.IsNavigating = false;
+            InputInjector.InjectedVertical = 0f;
+            InputInjector.InjectedHorizontal = 0f;
+            InputInjector.InjectedCameraH = 0f;
+            InputInjector.InjectedCameraV = 0f;
+            Plugin.NavController?.Cancel();
+            Plugin.Log.LogInfo("[Agent] Disconnected — all autonomous state cleared.");
+        });
     }
 
     /// <summary>Send a JSON-serializable object to the connected agent.</summary>

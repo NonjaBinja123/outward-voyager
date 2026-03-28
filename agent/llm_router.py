@@ -193,6 +193,10 @@ class LLMRouter:
                 cooldown = min(300, 30 * stats.consecutive_failures)
                 if time.time() - stats.last_failure < cooldown:
                     continue
+            elif not self._is_paid(name) and stats.consecutive_failures >= 5:
+                # Local model: back off 120s after 5 straight failures (model likely not loaded)
+                if time.time() - stats.last_failure < 120:
+                    continue
             if self._is_paid(name) and stats.calls_this_minute >= 50:
                 continue
 
@@ -266,6 +270,8 @@ class LLMRouter:
             "stream": False,
             "options": {"num_predict": max_tokens},
         }
+        if "num_ctx" in cfg:
+            payload["options"]["num_ctx"] = cfg["num_ctx"]
         max_attempts = 3
         for attempt in range(max_attempts):
             try:
@@ -274,9 +280,9 @@ class LLMRouter:
                         f"{url}/api/chat", json=payload,
                         timeout=aiohttp.ClientTimeout(total=120),
                     ) as r:
-                        if r.status == 500 and attempt < max_attempts - 1:
+                        if r.status >= 400 and attempt < max_attempts - 1:
                             wait = 10 * (attempt + 1)
-                            logger.info(f"[LLM] Ollama vision 500 on attempt {attempt+1} — retrying in {wait}s")
+                            logger.info(f"[LLM] Ollama vision {r.status} on attempt {attempt+1} — retrying in {wait}s")
                             await asyncio.sleep(wait)
                             continue
                         r.raise_for_status()
@@ -488,6 +494,10 @@ class LLMRouter:
         # think: false gives the full token budget to content instead of CoT
         if "think" in cfg:
             payload["think"] = cfg["think"]
+        # num_ctx overrides the model's default context window — critical for qwen3
+        # which defaults to 128K and pre-allocates ~30 GiB of KV cache for it
+        if "num_ctx" in cfg:
+            payload["options"]["num_ctx"] = cfg["num_ctx"]
 
         # Retry up to 5 times on 500 (model loading) or connection refused (Ollama not up yet)
         max_attempts = 5

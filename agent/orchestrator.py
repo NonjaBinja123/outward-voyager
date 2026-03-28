@@ -175,8 +175,9 @@ class Orchestrator:
         # Only start one watcher at a time
         if self._watcher_task is None or self._watcher_task.done():
             self._watcher_task = asyncio.create_task(self._loading_screen_watcher())
-        # Also watch for any action prompts on the transition screen
-        await self._start_prompt_watcher()
+        # Prompt watcher presses keys on death/defeat screens — only needed if dead
+        if self._state.player.get("is_dead"):
+            await self._start_prompt_watcher()
 
     async def _on_game_state(self, msg: dict) -> None:
         # Persist for dashboard

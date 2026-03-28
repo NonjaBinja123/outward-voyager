@@ -34,24 +34,25 @@ llm:
       base_url: http://localhost:11434
       model: qwen3:14b
       enabled: true
+      num_ctx: 16384  # 16K ctx for strategy tasks (longer prompts); avoids huge KV alloc
 
     # Fast reactive: qwen3:4b — very fast for moment-to-moment decisions (~3GB VRAM)
-    # Pull with: ollama pull qwen3:4b
+    # num_ctx=8192 overrides qwen3's default 128K context, which pre-allocates ~30 GiB
+    # of KV cache. 8K context is plenty for the agent's prompts (~2-3K tokens).
     ollama_fast:
       base_url: http://localhost:11434
       model: qwen3:4b
       enabled: true
-      think: false  # Disable CoT for 4B model — full token budget goes to JSON output
-      # think:true causes qwen3:4b to burn the token budget on reasoning, leaving only
-      # fragments for the JSON response (observed: "wait" 4-char outputs, truncated JSON)
-      # qwen3:14b (ollama provider) keeps think:true for strategy sessions
+      think: false  # Disable CoT — full token budget goes to JSON output for reactive tasks
+      num_ctx: 8192  # Keep KV cache small: 8K ctx = ~200 MB instead of ~30 GB
 
     # Vision: qwen2.5vl:7b — excellent at reading UI text and screenshots (~5GB VRAM)
-    # Pull with: ollama pull qwen2.5vl:7b
+    # num_ctx=4096 prevents the large KV cache pre-allocation (same issue as qwen3)
     ollama_vision:
       base_url: http://localhost:11434
       model: qwen2.5vl:7b
       enabled: true
+      num_ctx: 4096  # Screenshots fit easily in 4K tokens; avoids large KV cache alloc
 
     # ── Anthropic Claude ─────────────────────────────────────────────────
     # API key: https://console.anthropic.com → Settings → API Keys

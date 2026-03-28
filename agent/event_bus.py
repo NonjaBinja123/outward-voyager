@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Minimum seconds between any two LLM calls (hard debounce)
 DEBOUNCE_SECONDS = 2.0
 
-# If nothing triggers the LLM for this long, fire idle_timeout
+# Defaults — overridden by LLMTiming.benchmark() via set_timing()
 IDLE_TIMEOUT_SECONDS = 8.0
 
 
@@ -50,6 +50,19 @@ class EventBus:
         self._idle_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._firing: bool = False  # prevent concurrent LLM calls
+        self._idle_timeout: float = IDLE_TIMEOUT_SECONDS
+        self._combat_idle_timeout: float = 1.5
+        self._in_combat: bool = False
+
+    def set_timing(self, idle_s: float, combat_idle_s: float) -> None:
+        """Update idle timeouts from LLMTiming benchmark results."""
+        self._idle_timeout = idle_s
+        self._combat_idle_timeout = combat_idle_s
+        logger.info(f"[EventBus] Timing set — idle={idle_s:.1f}s combat={combat_idle_s:.1f}s")
+
+    def set_combat(self, in_combat: bool) -> None:
+        """Switch between normal and combat idle timeouts."""
+        self._in_combat = in_combat
 
     # ── Registration ─────────────────────────────────────────────────────────
 
@@ -80,9 +93,11 @@ class EventBus:
             }))
 
         if delta.combat_entered:
+            self._in_combat = True
             self._enqueue(GameEvent("combat_entered"))
 
         if delta.combat_exited:
+            self._in_combat = False
             self._enqueue(GameEvent("combat_exited"))
 
         if delta.death_occurred:
@@ -198,7 +213,8 @@ class EventBus:
     async def _idle_watcher(self) -> None:
         """Periodically check if we've been idle too long and fire idle_timeout."""
         while True:
-            await asyncio.sleep(1.0)
-            if time.time() - self._last_activity >= IDLE_TIMEOUT_SECONDS:
+            await asyncio.sleep(0.5)
+            timeout = self._combat_idle_timeout if self._in_combat else self._idle_timeout
+            if time.time() - self._last_activity >= timeout:
                 self._last_activity = time.time()   # reset before fire
                 await self._fire(GameEvent("idle_timeout"))

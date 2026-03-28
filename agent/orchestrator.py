@@ -27,6 +27,7 @@ from protocol.adapter import AdapterInfo
 from protocol.registry import AdapterRegistry
 from screen_reader import ScreenReader
 from state_manager import StateManager
+from timing import LLMTiming
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,9 @@ class Orchestrator:
         self._bus = EventBus()
         self._brain = Brain(self._llm, self._registry)
         self._dispatcher = ActionDispatcher(self._game, self._state)
+
+        # ── Timing ────────────────────────────────────────────────────────
+        self._timing = LLMTiming()
 
         # ── Vision / screen ───────────────────────────────────────────────
         self._screen_reader = ScreenReader(self._llm)
@@ -121,6 +125,9 @@ class Orchestrator:
 
     async def run(self) -> None:
         self._bus.start()
+        # Benchmark LLM timing before connecting — sets idle/combat/vision intervals
+        await self._timing.benchmark(self._llm)
+        self._bus.set_timing(self._timing.idle_timeout, self._timing.combat_idle_timeout)
         await asyncio.gather(
             self._game.connect(),
             self._poll_dashboard_chat(),
@@ -290,7 +297,10 @@ class Orchestrator:
 
     # ── EventBus handler — the one place brain is called ─────────────────────
 
-    _SCAN_INTERVAL: float = 60.0  # seconds between automatic re-scans
+    @property
+    def _scan_interval(self) -> float:
+        """Seconds between automatic scene scans — tighter during combat."""
+        return 5.0 if self._state.player.get("in_combat") else 60.0
 
     async def _on_event(self, event: GameEvent) -> None:
         """All LLM calls flow through here."""
@@ -300,11 +310,13 @@ class Orchestrator:
         # On death — start vision watcher to handle respawn/defeat screen prompts
         if event.name == "death":
             await self._start_prompt_watcher()
-        # Refresh scene scan if stale — agent's view of the world needs to move with him
-        if time.time() - self._last_scan_time > self._SCAN_INTERVAL:
+        # Refresh scene scan if stale
+        if time.time() - self._last_scan_time > self._scan_interval:
             await self._scan_scene()
         obs = self._build_observation()
+        t0 = time.time()
         result = await self._brain.think(event, obs)
+        self._timing.record_reactive(time.time() - t0)
         if not result:
             return
 

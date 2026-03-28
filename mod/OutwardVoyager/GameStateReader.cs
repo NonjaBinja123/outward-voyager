@@ -19,7 +19,6 @@ public class GameStateReader
         {
             SceneName = GetCurrentScene(),
             Player = playerState,
-            NearbyDead = GetNearbyDead(playerPos),
             NearbyInteractions = GetNearbyInteractions(playerPos),
             Inventory = GetInventory(),
             ScreenMessage = GetScreenMessage(),
@@ -276,81 +275,12 @@ public class GameStateReader
         return Math.Clamp(val, min, max);
     }
 
-    private const float ScanRadius = 100f;
-
-    // Keywords that suggest a visible object is a corpse/body.
-    private static readonly string[] CorpseKeywords =
-        ["corpse", "dead", "body", "cadaver", "skeleton", "skull", "bones", "remains"];
-
-    private static List<NearbyDeadEntry> GetNearbyDead(Vector3 playerPos)
-    {
-        var result   = new List<NearbyDeadEntry>();
-        var seenIds  = new HashSet<int>();
-
-        var playerChar = CharacterManager.Instance?.GetFirstLocalCharacter();
-        int playerInstanceId = playerChar != null ? playerChar.gameObject.GetInstanceID() : -1;
-
-        try
-        {
-            // ── Pass 1: Collider-based scan (Characters with IsDead, items) ─────
-            var colliders = Physics.OverlapSphere(playerPos, ScanRadius);
-            foreach (var col in colliders)
-            {
-                if (col == null) continue;
-                var root = col.transform.root.gameObject;
-                int id   = root.GetInstanceID();
-                if (!seenIds.Add(id)) continue;
-                if (id == playerInstanceId) continue;
-
-                var pos  = root.transform.position;
-                float dist = FlatDistance(pos, playerPos);
-
-                var ch = root.GetComponentInChildren<Character>();
-                if (ch != null)
-                {
-                    if (!ch.IsDead) continue;
-                    result.Add(MakeEntry(ch.UID?.ToString() ?? id.ToString(),
-                        ch.name, "character", pos, dist));
-                    continue;
-                }
-
-                if (MatchesCorpseKeyword(root.name))
-                    result.Add(MakeEntry(id.ToString(), root.name, "prop", pos, dist));
-            }
-
-            // NOTE: Pass 2 (FindObjectsOfType<Renderer>) was removed — it likely
-            // caused game crashes in IL2CPP. Use the "scan_nearby" command instead
-            // for thorough on-demand detection via scene hierarchy walk.
-        }
-        catch (Exception ex)
-        {
-            Plugin.Log.LogWarning($"NearbyDead scan error: {ex.Message}");
-        }
-
-        result.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-
-        return result;
-    }
-
-    private static bool MatchesCorpseKeyword(string name)
-    {
-        string lower = name.ToLowerInvariant();
-        return Array.Exists(CorpseKeywords, k => lower.Contains(k));
-    }
-
     private static float FlatDistance(Vector3 a, Vector3 b)
     {
         var d = a - b;
         d.y = 0f;
         return d.magnitude;
     }
-
-    private static NearbyDeadEntry MakeEntry(string uid, string name, string source,
-        Vector3 pos, float dist) => new()
-    {
-        Uid = uid, Name = name, Source = source,
-        X = pos.x, Y = pos.y, Z = pos.z, Distance = dist,
-    };
 
     // ── Nearby interactions ─────────────────────────────────────────────────
 
@@ -542,23 +472,10 @@ public class GameState
     [JsonPropertyName("type")] public string Type { get; init; } = "game_state";
     [JsonPropertyName("scene")] public string SceneName { get; init; } = "";
     [JsonPropertyName("player")] public PlayerState Player { get; init; } = new();
-    [JsonPropertyName("nearby_dead")] public List<NearbyDeadEntry> NearbyDead { get; init; } = new();
     [JsonPropertyName("nearby_interactions")] public List<NearbyInteractionEntry> NearbyInteractions { get; init; } = new();
     [JsonPropertyName("inventory")] public InventoryState Inventory { get; init; } = new();
     [JsonPropertyName("screen_message")] public string ScreenMessage { get; init; } = "";
     [JsonPropertyName("timestamp")] public long Timestamp { get; init; }
-}
-
-public class NearbyDeadEntry
-{
-    [JsonPropertyName("uid")]      public string Uid    { get; init; } = "";
-    [JsonPropertyName("name")]     public string Name   { get; init; } = "";
-    /// <summary>"character" = died at runtime, "prop" = pre-placed/static</summary>
-    [JsonPropertyName("source")]   public string Source { get; init; } = "";
-    [JsonPropertyName("x")]        public float  X      { get; init; }
-    [JsonPropertyName("y")]        public float  Y      { get; init; }
-    [JsonPropertyName("z")]        public float  Z      { get; init; }
-    [JsonPropertyName("distance")] public float  Distance { get; init; }
 }
 
 public class PlayerState

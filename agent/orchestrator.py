@@ -314,8 +314,10 @@ class Orchestrator:
         if time.time() - self._last_scan_time > self._scan_interval:
             await self._scan_scene()
         obs = self._build_observation()
+        # Capture screenshot — vision model uses it for reactive decisions
+        img_bytes = await asyncio.to_thread(self._screen_reader.capture_frame)
         t0 = time.time()
-        result = await self._brain.think(event, obs)
+        result = await self._brain.think(event, obs, img_bytes=img_bytes)
         self._timing.record_reactive(time.time() - t0)
         if not result:
             return
@@ -364,6 +366,33 @@ class Orchestrator:
         # Agent self-requests strategy session
         if result.get("request_strategy"):
             self._bus.on_strategy_request("agent-requested")
+
+        # Agent requested an immediate vision read — force a screenshot + vision parse,
+        # append the scene description to extra_context, re-think immediately (no debounce)
+        if result.get("request_vision"):
+            logger.info("[Orch] Agent requested vision — forcing screen read")
+            vision_data = await self._screen_reader.force_read()
+            if vision_data:
+                scene_desc = vision_data.get("scene_description", "")
+                menu = vision_data.get("menu_open")
+                all_text = vision_data.get("all_text", "")
+                vision_summary = f"VISION READ: {scene_desc}"
+                if menu:
+                    items = vision_data.get("menu_items", [])
+                    vision_summary += f" | Menu: {menu} — items: {items}"
+                if all_text:
+                    vision_summary += f" | Text on screen: {all_text[:300]}"
+                obs2 = self._build_observation()
+                obs2.extra_context = (obs2.extra_context + "\n" + vision_summary).strip()
+                img2 = await asyncio.to_thread(self._screen_reader.capture_frame)
+                result2 = await self._brain.think(event, obs2, img_bytes=img2)
+                self._timing.record_reactive(time.time() - t0)
+                if result2:
+                    actions2 = result2.get("actions", [])
+                    if actions2:
+                        self._dispatcher.dispatch(actions2)
+                        for a in actions2[:3]:
+                            self._recent_actions.append(f"{a.get('action', '')}({a.get('params', {})})")
 
         # Clear consumed chat
         self._pending_chat.clear()

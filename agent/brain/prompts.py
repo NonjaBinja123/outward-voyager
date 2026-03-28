@@ -66,10 +66,12 @@ Response format (JSON only, no markdown):
   "actions": [{"action": "<name>", "params": {...}}],
   "expect": "<what you expect to happen>",
   "journal": "<optional one-sentence log entry>",
-  "request_strategy": false
+  "request_strategy": false,
+  "request_vision": false
 }
 
 Set request_strategy true only when genuinely lost or after a major event (death, big discovery).
+Set request_vision true when you need to see what is on screen before deciding (menu contents, enemy position, death screen). A fresh screenshot will be taken immediately and included in your next decision.
 """
 
 STRATEGY_RESPONSE_FORMAT = """\

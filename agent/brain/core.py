@@ -27,8 +27,8 @@ class Brain:
     Packages observations into LLM prompts, calls the right tier, returns action plan.
 
     Tiers:
-      - reactive: fast model — moment-to-moment decisions
-      - strategy: deep model — reflection + goal-setting (death, strategy_request)
+      - reactive: fast vision model — moment-to-moment decisions with screenshot
+      - strategy: deep text model — reflection + goal-setting (death, strategy_request)
     """
 
     # Events that always escalate to strategy tier
@@ -48,10 +48,15 @@ class Brain:
         self,
         event: GameEvent,
         obs: Observation,
+        img_bytes: bytes | None = None,
     ) -> dict[str, Any] | None:
         """
         Given a triggering event and observation bundle, call the LLM and return
         a parsed action plan dict, or None on failure.
+
+        img_bytes: screenshot of the game window. When provided, reactive calls use
+                   complete_vision() so the vision model sees what the player sees.
+                   Strategy calls always use text-only complete() (deep reflection).
         """
         use_strategy = event.name in self.STRATEGY_EVENTS
         system = build_system(self._registry, strategy=use_strategy)
@@ -61,9 +66,18 @@ class Brain:
         # Reactive: 4K is enough for a short JSON response.
         max_tokens = 6144 if use_strategy else 4096
 
-        logger.info(f"[Brain] Think — event={event.name!r} tier={task}")
+        logger.info(f"[Brain] Think — event={event.name!r} tier={task} vision={'yes' if img_bytes and not use_strategy else 'no'}")
         try:
-            raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
+            if img_bytes and not use_strategy:
+                raw = await self._llm.complete_vision(
+                    system=system,
+                    user=user,
+                    img_bytes=img_bytes,
+                    task=task,
+                    max_tokens=max_tokens,
+                )
+            else:
+                raw = await self._llm.complete(system, user, task=task, max_tokens=max_tokens)
         except asyncio.CancelledError:
             raise
         except Exception as e:
